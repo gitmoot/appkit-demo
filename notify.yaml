@@ -1,0 +1,15 @@
+# appkit-notify: INTERNAL chain (never exposed). Fires on appkit-demo success (#922) and pings
+# the operator's Telegram. Secrets via env_file (#968) — which is exactly why this lives in a
+# separate pipeline: stages with env_keys/network are unexposable by design.
+name: appkit-notify
+repo: gitmoot/appkit-demo
+description: Notifies the operator on Telegram whenever the exposed appkit-demo pipeline serves an order, with the public receipt link.
+env_file: /root/.config/gitmoot/appkit-notify.env
+trigger:
+  kind: pipeline
+  pipeline: appkit-demo
+stages:
+  - id: notify
+    cmd: sh tools/notify.sh
+    env_keys: [TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]
+    timeout: 5m
