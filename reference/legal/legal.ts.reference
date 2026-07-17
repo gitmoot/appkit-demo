@@ -1,0 +1,146 @@
+import { site } from "./site";
+
+export type LegalSection = {
+  title: string;
+  body: string[];
+};
+
+export type LegalDocument = {
+  title: string;
+  intro: string;
+  sections: LegalSection[];
+};
+
+export const privacyPolicy: LegalDocument = {
+  title: "Privacy Policy",
+  intro: `${site.appName} is built to be played on a single device, in the same room, with no account and no internet connection. This policy explains the simple truth behind that: the app keeps your information on your device and does not send it to us.`,
+  sections: [
+    {
+      title: "The Short Version",
+      body: [
+        `${site.appName} does not require an account, does not ask you to sign in, and does not send your data to ${site.developerName} or anyone else.`,
+        "Everything you create while playing (player names, scores, and game settings) is stored only on the device you are playing on. The app works fully offline.",
+      ],
+    },
+    {
+      title: "What We Store (On-Device Only)",
+      body: [
+        "To let you keep playing across rounds and sessions, the app saves a small amount of information in your device's local storage, such as the player names you type in, scores from games you have played, and your in-app settings and preferences.",
+        "This information stays on your device. It is not transmitted to our servers, because the app has no servers it talks to in order to play.",
+      ],
+    },
+    {
+      title: "What We Don't Collect",
+      body: [
+        `We do not collect personal information, and we do not have user accounts. ${site.developerName} cannot see the names, scores, or settings on your device.`,
+        "We do not use analytics, advertising, or third-party tracking of any kind. The app does not include ad networks, marketing trackers, or behavioral profiling.",
+        "We do not require location, contacts, microphone, camera, or other sensitive device permissions in order to play.",
+      ],
+    },
+    {
+      title: "Optional Features Not Active in This Version",
+      body: [
+        "Optional sign-in, in-app purchases, and push notifications are not enabled in this version of the app. As shipped, the app does not connect to an account system, a payment provider, or a notification service.",
+        "If a future version enables any of these features, we will update this Privacy Policy before that version is released, name the providers we use (for example, the platform's app store for purchases or its push notification service), and explain what data is involved.",
+      ],
+    },
+    {
+      title: "Works Offline",
+      body: [
+        "The app is designed to run without a network connection. You can play in airplane mode. Because there is no required network activity for gameplay, there is no game data flowing to us during play.",
+      ],
+    },
+    {
+      title: "Children and General Audiences",
+      body: [
+        `${site.appName} is a general-audience party game and is not directed at children under the age where parental consent would be required in your region.`,
+        "Because the app does not collect personal information or require an account, it does not knowingly gather data from anyone, including children.",
+      ],
+    },
+    {
+      title: "Your Control Over Your Data",
+      body: [
+        "Because your data lives on your device, you are in control of it. Clearing the app's data or deleting the app removes the player names, scores, and settings stored on that device.",
+        "Note that your device's operating system or backups (for example, an iCloud or Android device backup) may retain app data independently of the app, according to that platform's own settings and policies.",
+      ],
+    },
+    {
+      title: "Changes to This Policy",
+      body: [
+        "We may update this Privacy Policy as the app evolves, for example if we later enable optional sign-in, purchases, or notifications. When we make a material change, we will update the effective date above and, where appropriate, note the change in the app or on this page.",
+      ],
+    },
+    {
+      title: "Contact",
+      body: [
+        `If you have questions about this Privacy Policy, contact ${site.developerName} at ${site.supportEmail}.`,
+      ],
+    },
+  ],
+};
+
+export const termsOfService: LegalDocument = {
+  title: "Terms of Service",
+  intro: `These Terms of Service ("Terms") govern your use of ${site.appName} (the "App"). By installing or using the App, you agree to these Terms.`,
+  sections: [
+    {
+      title: "Acceptance of These Terms",
+      body: [
+        "By downloading, installing, or using the App, you confirm that you have read, understood, and agree to be bound by these Terms. If you do not agree, do not use the App.",
+        "If you are using the App on behalf of others playing in the same room, you are responsible for making them aware of the relevant parts of these Terms.",
+      ],
+    },
+    {
+      title: "License to Use the App",
+      body: [
+        `${site.developerName} grants you a personal, limited, non-exclusive, non-transferable, revocable license to install and use the App on devices you own or control, for your own personal, non-commercial entertainment.`,
+        "You may not sell, rent, sublicense, or commercially exploit the App, and you may not copy, modify, reverse engineer, or create derivative works from it except where applicable law expressly permits.",
+      ],
+    },
+    {
+      title: "Acceptable Use",
+      body: [
+        "Use the App only for lawful purposes and in a way that respects the other people playing with you.",
+        "You are responsible for the player names and any other content you enter into the App and for ensuring it is appropriate for everyone in the room. Do not use the App to harass, threaten, or harm others.",
+      ],
+    },
+    {
+      title: "Entertainment Only",
+      body: [
+        "The App and its games, prompts, and word lists are provided purely for entertainment. They are not advice of any kind, and outcomes within the games carry no real-world significance.",
+      ],
+    },
+    {
+      title: "No Warranty",
+      body: [
+        'The App is provided "as is" and "as available," without warranties of any kind, whether express or implied, including any implied warranties of merchantability, fitness for a particular purpose, and non-infringement, to the maximum extent permitted by law.',
+        `${site.developerName} does not warrant that the App will be uninterrupted, error-free, or free of defects, or that it will meet your requirements.`,
+      ],
+    },
+    {
+      title: "Limitation of Liability",
+      body: [
+        `To the maximum extent permitted by law, ${site.developerName} will not be liable for any indirect, incidental, special, consequential, or punitive damages, or for any loss of data, arising out of or relating to your use of (or inability to use) the App.`,
+        "Some jurisdictions do not allow certain limitations of liability, so some of the above may not apply to you.",
+      ],
+    },
+    {
+      title: "Changes to These Terms",
+      body: [
+        "We may update these Terms from time to time. When we make a material change, we will update the effective date above. Your continued use of the App after an update means you accept the revised Terms.",
+      ],
+    },
+    {
+      title: "Governing Law",
+      body: [
+        "These Terms are governed by the laws of the United Arab Emirates, without regard to its conflict-of-law rules. Any disputes will be subject to the courts of the United Arab Emirates, unless mandatory local law provides otherwise.",
+      ],
+    },
+    {
+      title: "Contact",
+      body: [
+        `Questions about these Terms can be sent to ${site.developerName} at ${site.supportEmail}.`,
+      ],
+    },
+  ],
+};
