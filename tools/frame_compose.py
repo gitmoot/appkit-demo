@@ -1,153 +1,129 @@
-#!/usr/bin/env python3
-"""
-App Store screenshot composer — "floating device" style.
+"""Deterministic, repo-asset-only App Store screenshot compositor."""
 
-Composites an app screenshot into a photorealistic iPhone frame PNG, places the
-framed phone on a dark violet-glow background, and adds a sentence-case headline
-on top. Matches the reference the user supplied (Game Night / In your pocket).
+from __future__ import annotations
 
-Output: 1290x2796 (App Store Connect 6.7").
-"""
-import argparse, os
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+import hashlib
+from functools import lru_cache
+from pathlib import Path
 
-HERE = os.path.dirname(__file__)
-FRAME_PATH = os.path.join(HERE, "assets", "iphone15-black.png")
-FONT_PATH = os.environ.get("ASO_FONT") or os.path.join(
-    HERE, "assets", "fonts", "PlusJakartaSans-ExtraBold.ttf")
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL.PngImagePlugin import PngInfo
 
-# App Store 6.7" canvas
+
+HERE = Path(__file__).resolve().parent
+FRAME_PATH = HERE / "assets" / "iphone15-black.png"
+FONT_PATH = HERE / "assets" / "fonts" / "PlusJakartaSans-ExtraBold.ttf"
+BOLD_FONT_PATH = HERE / "assets" / "fonts" / "PlusJakartaSans-Bold.ttf"
+
+ASSET_SHA256 = {
+    FRAME_PATH: "4a3572fab045a896e9685b059d4936fa0504edb26f39e14d15c0188d14fa42cf",
+    FONT_PATH: "7d60d21b5dec501c77437e80aabd539f1d7a7b0ac7d4ada361d4d42abc7c55ea",
+    BOLD_FONT_PATH: "5f5342ef76862b5b5365d1dff1a667629dfa484e388dd602552f647219c3870f",
+}
+
 CANVAS_W, CANVAS_H = 1290, 2796
-
-# Frame screen cutout (measured from the supplied frame, 1419x2796)
-FRAME_W, FRAME_H = 1419, 2796
-SCREEN = (120, 120, 1298, 2675)   # x0, y0, x1, y1
-
-# Layout
-BG_BASE = (14, 14, 18)            # #0E0E12
-GLOW = (150, 92, 255)             # violet bloom
-PHONE_W_FRAC = 0.82               # phone width as fraction of canvas
-PHONE_TOP_FRAC = 0.205            # phone top as fraction of canvas height
+FRAME_SCREEN = (120, 120, 1298, 2675)
+SCREEN_W = FRAME_SCREEN[2] - FRAME_SCREEN[0]
+SCREEN_H = FRAME_SCREEN[3] - FRAME_SCREEN[1]
+BG_BASE = (14, 14, 18, 255)
+PHONE_W_FRAC = 0.82
+PHONE_TOP_FRAC = 0.205
 HEAD_TOP_FRAC = 0.066
-HEAD_SIZE = 132
-HEAD_LINE_GAP = 18
-HEAD_COLOR = (245, 245, 250)
+HEAD_COLOR = (245, 245, 250, 255)
 
 
-def build_background():
-    yy, xx = np.mgrid[0:CANVAS_H, 0:CANVAS_W].astype(np.float32)
-    cx, cy = CANVAS_W * 0.5, CANVAS_H * -0.02
-    d = np.sqrt(((xx - cx) / (CANVAS_W * 0.72)) ** 2 +
-                ((yy - cy) / (CANVAS_H * 0.40)) ** 2)
-    inten = np.clip(1.0 - d, 0.0, 1.0) ** 1.7
-    base = np.array(BG_BASE, np.float32)
-    glow = np.array(GLOW, np.float32)
-    img = base[None, None, :] + inten[:, :, None] * (glow - base)[None, None, :]
-    img = np.clip(img, 0, 255).astype(np.uint8)
-    return Image.fromarray(img, "RGB").convert("RGBA")
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def frame_screenshot(shot_path):
-    """Composite the screenshot into the iPhone frame; return RGBA phone.
+@lru_cache(maxsize=1)
+def verify_assets() -> None:
+    for path in sorted(ASSET_SHA256, key=lambda item: item.as_posix()):
+        if not path.is_file() or path.is_symlink():
+            raise RuntimeError("required asset missing or unsafe")
+        if _sha256(path) != ASSET_SHA256[path]:
+            raise RuntimeError("required asset digest mismatch")
 
-    The FULL screenshot is shown with no vertical crop: it is contain-fit into
-    the screen below a status-bar gap that clears the Dynamic Island. Any small
-    leftover (thin side margins) is backfilled with the screen's own top colour.
-    """
+
+def _brand_rgb(brand_color: str) -> tuple[int, int, int]:
+    return tuple(int(brand_color[index : index + 2], 16) for index in (1, 3, 5))
+
+
+def _font(size: int) -> ImageFont.FreeTypeFont:
+    return ImageFont.truetype(
+        FONT_PATH, size, layout_engine=ImageFont.Layout.BASIC
+    )
+
+
+def build_background(brand_color: str) -> Image.Image:
+    brand = _brand_rgb(brand_color)
+    canvas = Image.new("RGBA", (CANVAS_W, CANVAS_H), BG_BASE)
+    glow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(glow)
+    draw.ellipse(
+        (-190, -690, CANVAS_W + 190, 960),
+        fill=(brand[0], brand[1], brand[2], 225),
+    )
+    glow = glow.filter(ImageFilter.GaussianBlur(220))
+    return Image.alpha_composite(canvas, glow)
+
+
+def frame_screenshot(screen: Image.Image) -> Image.Image:
+    verify_assets()
     frame = Image.open(FRAME_PATH).convert("RGBA")
-    alpha = np.asarray(frame)[:, :, 3]
-    x0, y0, x1, y1 = SCREEN
-    sw, sh = x1 - x0, y1 - y0
-
-    # Measure the Dynamic Island (opaque cluster inside the top of the screen)
-    # so the status-bar gap clears it exactly.
-    cx = (x0 + x1) // 2
-    di = alpha[y0:y0 + 320, cx - 260:cx + 260] > 200
-    rows = np.where(di.any(axis=1))[0]
-    di_bottom = (y0 + int(rows.max())) if len(rows) else (y0 + 180)
-    gap = (di_bottom - y0) + 26
-
-    shot = Image.open(shot_path).convert("RGBA")
-    # contain-fit the whole screenshot into the area below the status bar
-    avail_w, avail_h = sw, sh - gap
-    scale = min(avail_w / shot.width, avail_h / shot.height)
-    nw, nh = round(shot.width * scale), round(shot.height * scale)
-    rs = shot.resize((nw, nh), Image.LANCZOS)
-
-    top_row = np.asarray(rs)[0:6].reshape(-1, 4)
-    fill = tuple(int(c) for c in np.median(top_row, axis=0))
-    screen_layer = Image.new("RGBA", (sw, sh), fill)
-    ox = (sw - nw) // 2
-    oy = gap + (avail_h - nh) // 2
-    screen_layer.paste(rs, (ox, oy))
-
+    prepared = screen.convert("RGBA")
+    if prepared.size != (SCREEN_W, SCREEN_H):
+        prepared = prepared.resize(
+            (SCREEN_W, SCREEN_H), Image.Resampling.LANCZOS
+        )
     phone = Image.new("RGBA", frame.size, (0, 0, 0, 0))
-    phone.paste(screen_layer, (x0, y0))
-    phone = Image.alpha_composite(phone, frame)
-    return phone
+    phone.paste(prepared, FRAME_SCREEN[:2])
+    return Image.alpha_composite(phone, frame)
 
 
-def word_wrap(draw, text, font, max_w):
-    words, lines, cur = text.split(), [], ""
-    for w in words:
-        t = f"{cur} {w}".strip()
-        if draw.textlength(t, font=font) <= max_w:
-            cur = t
-        else:
-            if cur:
-                lines.append(cur)
-            cur = w
-    if cur:
-        lines.append(cur)
-    return lines
+def compose(screen: Image.Image, headline: str, brand_color: str) -> Image.Image:
+    verify_assets()
+    canvas = build_background(brand_color)
+    phone = frame_screenshot(screen)
+    phone_width = int(CANVAS_W * PHONE_W_FRAC)
+    phone_height = round(phone.height * phone_width / phone.width)
+    phone = phone.resize(
+        (phone_width, phone_height), Image.Resampling.LANCZOS
+    )
+    phone_x = (CANVAS_W - phone_width) // 2
+    phone_y = int(CANVAS_H * PHONE_TOP_FRAC)
+    canvas.alpha_composite(phone, (phone_x, phone_y))
 
-
-def compose(shot_path, lines, output):
-    canvas = build_background()
     draw = ImageDraw.Draw(canvas)
-
-    # ── Phone ───────────────────────────────────────────────
-    phone = frame_screenshot(shot_path)
-    pw = int(CANVAS_W * PHONE_W_FRAC)
-    ph = round(phone.height * pw / phone.width)
-    phone = phone.resize((pw, ph), Image.LANCZOS)
-    px = (CANVAS_W - pw) // 2
-    py = int(CANVAS_H * PHONE_TOP_FRAC)
-    canvas.alpha_composite(phone, (px, py))
-
-    # ── Headline ────────────────────────────────────────────
-    # Keep each supplied line on one line: shrink the font until the widest fits.
-    max_w = int(CANVAS_W * 0.86)
-    size = HEAD_SIZE
-    while size > 74:
-        font = ImageFont.truetype(FONT_PATH, size)
-        if all(draw.textlength(ln, font=font) <= max_w for ln in lines):
+    max_width = int(CANVAS_W * 0.86)
+    size = 132
+    while size > 18:
+        font = _font(size)
+        box = draw.textbbox((0, 0), headline, font=font)
+        if box[2] - box[0] <= max_width:
             break
-        size -= 4
-    font = ImageFont.truetype(FONT_PATH, size)
-    all_lines = lines
-    y = int(CANVAS_H * HEAD_TOP_FRAC)
-    for ln in all_lines:
-        bbox = draw.textbbox((0, 0), ln, font=font)
-        h = bbox[3] - bbox[1]
-        draw.text((CANVAS_W // 2, y - bbox[1]), ln, fill=HEAD_COLOR, font=font, anchor="mt")
-        y += h + HEAD_LINE_GAP
-
-    canvas.convert("RGB").save(output, "PNG")
-    print(f"✓ {output} ({CANVAS_W}x{CANVAS_H})")
+        size -= 2
+    font = _font(size)
+    box = draw.textbbox((0, 0), headline, font=font)
+    width = box[2] - box[0]
+    x = (CANVAS_W - width) // 2 - box[0]
+    y = int(CANVAS_H * HEAD_TOP_FRAC) - box[1]
+    draw.text((x, y), headline, fill=HEAD_COLOR, font=font)
+    return canvas.convert("RGB")
 
 
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--screenshot", required=True)
-    p.add_argument("--line1", required=True)
-    p.add_argument("--line2", default="")
-    p.add_argument("--output", required=True)
-    a = p.parse_args()
-    lines = [a.line1] + ([a.line2] if a.line2 else [])
-    compose(a.screenshot, lines, a.output)
-
-
-if __name__ == "__main__":
-    main()
+def save_png(image: Image.Image, output: Path) -> None:
+    image.save(
+        output,
+        format="PNG",
+        optimize=False,
+        compress_level=9,
+        pnginfo=PngInfo(),
+    )

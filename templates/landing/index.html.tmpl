@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="{tagline}">
+  <title>{app_name} — {tagline}</title>
+  <style>
+    :root { color-scheme: dark; --brand: {brand_color}; --ink: #f7f7fb; --muted: #b6b8c5; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #0e0e12; color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    a { color: inherit; }
+    .wrap { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
+    .hero { min-height: 72vh; display: grid; align-items: center; padding: 96px 0 72px; background: radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--brand) 62%, transparent), transparent 58%); }
+    .eyebrow { color: #d9d3ff; font-size: .82rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+    h1 { max-width: 900px; margin: 20px 0; font-size: clamp(3rem, 8vw, 7rem); line-height: .94; letter-spacing: -.055em; }
+    .lede { max-width: 680px; color: var(--muted); font-size: clamp(1.15rem, 2.4vw, 1.55rem); line-height: 1.55; }
+    .accent { color: var(--brand); }
+    .headlines { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; padding: 88px 0 56px; }
+    .headlines p { margin: 0; font-size: clamp(1.4rem, 3vw, 2.5rem); font-weight: 750; line-height: 1.08; }
+    .shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; padding-bottom: 96px; }
+    .shots img { display: block; width: 100%; height: auto; border-radius: 22px; box-shadow: 0 28px 80px #0008; }
+    footer { border-top: 1px solid #ffffff18; color: var(--muted); padding: 28px 0 44px; }
+    footer .wrap { display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+    footer nav { display: flex; gap: 18px; }
+    @media (max-width: 760px) { .headlines, .shots { grid-template-columns: 1fr; } .hero { padding-top: 72px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div class="wrap">
+        <p class="eyebrow">By {developer_entity}</p>
+        <h1>{app_name}<span class="accent">.</span></h1>
+        <p class="lede">{tagline}</p>
+      </div>
+    </section>
+    <section class="wrap" aria-label="Highlights">
+      <div class="headlines">
+        <p>{headline_1}</p>
+        <p>{headline_2}</p>
+        <p>{headline_3}</p>
+      </div>
+      <div class="shots">
+        <img src="../screenshots/{screenshot_locale}/shot_1.png" alt="{app_name} app screen one">
+        <img src="../screenshots/{screenshot_locale}/shot_2.png" alt="{app_name} app screen two">
+        <img src="../screenshots/{screenshot_locale}/shot_3.png" alt="{app_name} app screen three">
+      </div>
+    </section>
+  </main>
+  <footer>
+    <div class="wrap">
+      <span>© {developer_entity} · {support_email}</span>
+      <nav aria-label="Legal"><a href="../legal/terms.md">Terms</a><a href="../legal/privacy.md">Privacy</a></nav>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,11 @@
+name: appkit-demo
+repo: gitmoot/appkit-demo
+description: Deterministically builds and verifies a complete app launch kit from bounded typed inputs.
+stages:
+  - id: compose
+    cmd: python3 tools/stage_compose.py
+  - id: content
+    cmd: python3 tools/stage_content.py
+  - id: kit
+    cmd: python3 tools/stage_kit.py
+    needs: [compose, content]
