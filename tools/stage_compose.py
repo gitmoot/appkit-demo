@@ -13,6 +13,7 @@ from stage_support import (
     failure_summary,
     identity_digests,
     log,
+    prepare_output_tree,
     success_summary,
 )
 
@@ -21,6 +22,7 @@ def main() -> None:
     try:
         values = load_inputs()
         frame_compose.verify_assets()
+        prepare_output_tree()
         outputs = screens.render_screenshots(values)
         digests = identity_digests(outputs, Path.cwd())
         emit_result("implemented", success_summary(values, digests))

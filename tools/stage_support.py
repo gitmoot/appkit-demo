@@ -5,12 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import stat
 import sys
+import zlib
 from pathlib import Path
 
 from PIL import Image, __version__ as PILLOW_VERSION
 
 from inputs import input_sha256
+
+
+ZLIB_VERSION = zlib.ZLIB_RUNTIME_VERSION
 
 
 def canonical_json(value: object) -> str:
@@ -69,6 +75,7 @@ def success_summary(
         "input_sha256": input_sha256(values),
         "pillow": PILLOW_VERSION,
         "v": 1,
+        "zlib": ZLIB_VERSION,
     }
     for key in sorted(extras):
         summary[key] = extras[key]
@@ -79,14 +86,42 @@ def failure_summary(reason: str) -> dict[str, object]:
     return {"reason": reason, "v": 1}
 
 
+def prepare_output_tree() -> Path:
+    """Replace any pre-seeded output tree without following its symlinks."""
+
+    out = Path.cwd() / "out"
+    try:
+        mode = out.lstat().st_mode
+    except FileNotFoundError:
+        pass
+    else:
+        if stat.S_ISLNK(mode):
+            raise RuntimeError("unsafe output root")
+        if stat.S_ISDIR(mode):
+            shutil.rmtree(out, ignore_errors=False)
+        else:
+            out.unlink()
+    out.mkdir()
+    return out
+
+
 def safe_output_path(relative: str) -> Path:
     cwd = Path.cwd()
     out = cwd / "out"
+    if os.path.isabs(relative):
+        raise RuntimeError("absolute output path")
+    normalized = os.path.normpath(relative)
+    if normalized in ("", "."):
+        raise RuntimeError("invalid output path")
     if out.exists() and out.is_symlink():
         raise RuntimeError("unsafe output root")
     out.mkdir(exist_ok=True)
-    target = cwd / relative
-    if target != out and out not in target.parents:
+    target = cwd / normalized
+    try:
+        target.relative_to(out)
+    except ValueError as error:
+        raise RuntimeError("output path escaped root") from error
+    if target == out:
         raise RuntimeError("output path escaped root")
     current = out
     for part in target.relative_to(out).parts[:-1]:
@@ -94,8 +129,13 @@ def safe_output_path(relative: str) -> Path:
         if current.exists() and current.is_symlink():
             raise RuntimeError("unsafe output parent")
         current.mkdir(exist_ok=True)
-    if target.exists() and target.is_symlink():
-        raise RuntimeError("unsafe output target")
+    try:
+        target_mode = target.lstat().st_mode
+    except FileNotFoundError:
+        pass
+    else:
+        if stat.S_ISLNK(target_mode) or not stat.S_ISREG(target_mode):
+            raise RuntimeError("unsafe output target")
     return target
 
 

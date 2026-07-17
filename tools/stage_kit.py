@@ -14,12 +14,14 @@ import screens
 from inputs import InputError, input_sha256, load_inputs
 from stage_support import (
     PILLOW_VERSION,
+    ZLIB_VERSION,
     canonical_json,
     emit_result,
     failure_summary,
     identity_digests,
     inspect_output_tree,
     log,
+    prepare_output_tree,
     safe_output_path,
     sha256_file,
     success_summary,
@@ -46,24 +48,6 @@ def _allowed_directories(expected_files: list[str]) -> set[str]:
             directories.add(parent.as_posix())
             parent = parent.parent
     return directories
-
-
-def _prepare_output(values: dict[str, object]) -> None:
-    out = Path.cwd() / "out"
-    expected = {
-        Path(path).relative_to("out").as_posix()
-        for path in _expected_relpaths(values)
-    }
-    allowed_files = expected | {"manifest.json", "launch-kit.zip"}
-    files, directories, has_symlink = inspect_output_tree(out)
-    if has_symlink or not files.issubset(allowed_files):
-        raise VerificationError("unexpected_output")
-    if not directories.issubset(_allowed_directories(_expected_relpaths(values))):
-        raise VerificationError("unexpected_output")
-    for name in ("manifest.json", "launch-kit.zip"):
-        path = out / name
-        if path.exists():
-            path.unlink()
 
 
 def _load_context() -> dict[str, object]:
@@ -115,6 +99,7 @@ def _upstream_summaries(
             "input_sha256",
             "pillow",
             "v",
+            "zlib",
         ]:
             raise VerificationError("summary_invalid")
         digests = summary.get("digests")
@@ -122,6 +107,7 @@ def _upstream_summaries(
             summary.get("v") != 1
             or summary.get("input_sha256") != expected_input
             or summary.get("pillow") != PILLOW_VERSION
+            or summary.get("zlib") != ZLIB_VERSION
             or not isinstance(digests, dict)
             or any(not isinstance(key, str) or not isinstance(value, str) for key, value in digests.items())
         ):
@@ -163,6 +149,7 @@ def _write_manifest(paths: list[Path], values: dict[str, object]) -> tuple[Path,
         "input_sha256": input_sha256(values),
         "pillow": PILLOW_VERSION,
         "schema_version": 1,
+        "zlib": ZLIB_VERSION,
     }
     manifest_path = safe_output_path("out/manifest.json")
     manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8", newline="\n")
@@ -196,7 +183,7 @@ def main() -> None:
     try:
         values = load_inputs()
         frame_compose.verify_assets()
-        _prepare_output(values)
+        prepare_output_tree()
         summaries = _upstream_summaries(_load_context(), values)
 
         screenshot_paths = screens.render_screenshots(values)
@@ -235,6 +222,9 @@ def main() -> None:
     except VerificationError as error:
         log(f"kit verification failed: {error}")
         emit_result("failed", failure_summary(f"verification:{error}"))
+    except render.TemplateError:
+        log("kit failed: template error")
+        emit_result("failed", failure_summary("template_error"))
     except Exception as error:
         log(f"kit failed: {type(error).__name__}")
         emit_result("failed", failure_summary("kit_error"))

@@ -25,6 +25,10 @@ CANVAS_W, CANVAS_H = 1290, 2796
 FRAME_SCREEN = (120, 120, 1298, 2675)
 SCREEN_W = FRAME_SCREEN[2] - FRAME_SCREEN[0]
 SCREEN_H = FRAME_SCREEN[3] - FRAME_SCREEN[1]
+# Measured from assets/iphone15-black.png, relative to FRAME_SCREEN.
+ISLAND_RECT = (402, 34, 776, 143)
+ISLAND_CLEARANCE = 26
+CONTENT_TOP = ISLAND_RECT[3] + ISLAND_CLEARANCE
 BG_BASE = (14, 14, 18, 255)
 PHONE_W_FRAC = 0.82
 PHONE_TOP_FRAC = 0.205
@@ -79,13 +83,47 @@ def frame_screenshot(screen: Image.Image) -> Image.Image:
     verify_assets()
     frame = Image.open(FRAME_PATH).convert("RGBA")
     prepared = screen.convert("RGBA")
-    if prepared.size != (SCREEN_W, SCREEN_H):
-        prepared = prepared.resize(
-            (SCREEN_W, SCREEN_H), Image.Resampling.LANCZOS
-        )
+    available_height = SCREEN_H - CONTENT_TOP
+    scale = min(SCREEN_W / prepared.width, available_height / prepared.height)
+    prepared_width = round(prepared.width * scale)
+    prepared_height = round(prepared.height * scale)
+    prepared = prepared.resize(
+        (prepared_width, prepared_height), Image.Resampling.LANCZOS
+    )
+    fill = prepared.getpixel((0, 0))
+    screen_layer = Image.new("RGBA", (SCREEN_W, SCREEN_H), fill)
+    offset_x = (SCREEN_W - prepared_width) // 2
+    offset_y = CONTENT_TOP + (available_height - prepared_height) // 2
+    screen_layer.paste(prepared, (offset_x, offset_y))
     phone = Image.new("RGBA", frame.size, (0, 0, 0, 0))
-    phone.paste(prepared, FRAME_SCREEN[:2])
+    phone.paste(screen_layer, FRAME_SCREEN[:2])
     return Image.alpha_composite(phone, frame)
+
+
+def _fit_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    maximum: int,
+    start: int,
+    minimum: int,
+) -> tuple[str, ImageFont.FreeTypeFont]:
+    size = start
+    while True:
+        font = _font(size)
+        box = draw.textbbox((0, 0), text, font=font)
+        if box[2] - box[0] <= maximum:
+            return text, font
+        if size == minimum:
+            break
+        size = max(minimum, size - 2)
+
+    rendered = text
+    while rendered:
+        box = draw.textbbox((0, 0), rendered, font=font)
+        if box[2] - box[0] <= maximum:
+            break
+        rendered = rendered[:-1]
+    return rendered, font
 
 
 def compose(screen: Image.Image, headline: str, brand_color: str) -> Image.Image:
@@ -103,19 +141,12 @@ def compose(screen: Image.Image, headline: str, brand_color: str) -> Image.Image
 
     draw = ImageDraw.Draw(canvas)
     max_width = int(CANVAS_W * 0.86)
-    size = 132
-    while size > 18:
-        font = _font(size)
-        box = draw.textbbox((0, 0), headline, font=font)
-        if box[2] - box[0] <= max_width:
-            break
-        size -= 2
-    font = _font(size)
-    box = draw.textbbox((0, 0), headline, font=font)
+    rendered_headline, font = _fit_text(draw, headline, max_width, 132, 18)
+    box = draw.textbbox((0, 0), rendered_headline, font=font)
     width = box[2] - box[0]
     x = (CANVAS_W - width) // 2 - box[0]
     y = int(CANVAS_H * HEAD_TOP_FRAC) - box[1]
-    draw.text((x, y), headline, fill=HEAD_COLOR, font=font)
+    draw.text((x, y), rendered_headline, fill=HEAD_COLOR, font=font)
     return canvas.convert("RGB")
 
 

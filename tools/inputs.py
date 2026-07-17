@@ -55,7 +55,7 @@ def _reject_unsafe_unicode(field: str, value: str) -> None:
     if unicodedata.normalize("NFC", value) != value:
         raise InputError(field, "non_nfc")
     for char in value:
-        if unicodedata.category(char) in ("Cc", "Cf"):
+        if unicodedata.category(char).startswith("C"):
             raise InputError(field, "unsafe_unicode")
 
 
@@ -67,8 +67,10 @@ def _read_string(field: str) -> str:
             raise InputError(field, "required")
         raw = DEFAULTS[field]
     value = raw.strip()
-    if field == "app_name" and not value:
-        raise InputError(field, "required")
+    if not value:
+        if field == "app_name":
+            raise InputError(field, "required")
+        value = DEFAULTS[field]
     if len(value) > FIELD_LIMITS[field]:
         raise InputError(field, "too_long")
     _reject_unsafe_unicode(field, value)

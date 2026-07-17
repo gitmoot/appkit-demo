@@ -8,7 +8,7 @@ Appkit Demo is a deterministic, shell-only Gitmoot pipeline that turns a small t
 
 Every stage command is fixed (`python3 tools/stage_<id>.py`). Inputs are read only from the bounded `GITMOOT_INPUT_*` variables. There is no network access, input interpolation into shell, shared stage filesystem, clock, randomness, or host/run metadata in artifacts. Each stage writes only beneath its own `out/` and emits exactly one final `gitmoot_result` JSON line on stdout; diagnostics go to stderr.
 
-Image identity uses SHA-256 over canonical RGBA pixels. Text identity uses raw file bytes. Each stage summary includes the canonical input digest and exact Pillow fingerprint. The kit fails closed unless the v1 upstream context is complete, untruncated, successful, and exactly matches its regeneration. The manifest uses file-byte SHA-256, while the ZIP uses sorted stored entries, fixed 1980 metadata, and fixed Unix file attributes.
+Image identity uses SHA-256 over canonical RGBA pixels. Text identity uses raw file bytes. Each stage summary includes the canonical input digest plus exact Pillow and zlib runtime fingerprints. The kit fails closed unless the v1 upstream context is complete, untruncated, successful, and exactly matches its regeneration. The manifest uses file-byte SHA-256, while the ZIP uses sorted stored entries, fixed 1980 metadata, and fixed Unix file attributes. Manifest SHA-256 values are per-host because PNG encoder bytes may vary with zlib; cross-stage image verification uses canonical RGBA identities.
 
 ## Register and run
 
@@ -41,4 +41,6 @@ The service is the proof-receipt demonstration: it attests typed-input admission
 
 ## Defaults and validation
 
-Only `app_name` is required. Locales default to `en,it`; color, tagline, three headlines, support email, and developer entity have deterministic defaults. Stages trim every value, reject overlong or non-NFC strings, control/format characters (including zero-width and bidirectional controls), invalid colors, non-enumerated locale lists, and non-conservative ASCII email addresses.
+Only `app_name` is required. Locales default to `en,it`; color, tagline, three headlines, support email, and developer entity have deterministic defaults, including when an optional input is present but blank. Stages trim every value, reject overlong or non-NFC strings, all Unicode `C*` categories (including controls, zero-width/bidirectional characters, and surrogates), invalid colors, non-enumerated locale lists, and non-conservative ASCII email addresses.
+
+Rendered App Store copy is deterministically capped to the platform fields: name 30 characters, subtitle 30, promotional text 170, and keywords 100. Truncation uses no ellipsis and strips trailing whitespace; the full validated values still flow to landing and legal outputs.

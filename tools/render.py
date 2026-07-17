@@ -18,7 +18,17 @@ COPY_FILES = (
     "promotional_text",
     "subtitle",
 )
-_TOKEN_RE = re.compile(r"\{[a-z][a-z0-9_]*\}")
+COPY_LIMITS = {
+    "keywords": 100,
+    "name": 30,
+    "promotional_text": 170,
+    "subtitle": 30,
+}
+_TOKEN_RE = re.compile(r"\{([a-z][a-z0-9_]*)\}")
+
+
+class TemplateError(RuntimeError):
+    pass
 
 
 def _read_template(path: Path) -> str:
@@ -28,13 +38,16 @@ def _read_template(path: Path) -> str:
 
 
 def _replace(template: str, replacements: dict[str, object], html_target: bool) -> str:
-    rendered = template
-    for key in sorted(replacements):
-        value = escape_html(replacements[key]) if html_target else str(replacements[key])
-        rendered = rendered.replace("{" + key + "}", value)
-    if _TOKEN_RE.search(rendered):
-        raise RuntimeError("unresolved template token")
-    return rendered
+    def substitute(match: re.Match[str]) -> str:
+        key = match.group(1)
+        try:
+            value = replacements[key]
+        except KeyError as error:
+            raise TemplateError("unknown template token") from error
+        return escape_html(value) if html_target else str(value)
+
+    # re.sub scans only the template. Braces returned by the callback are inert.
+    return _TOKEN_RE.sub(substitute, template)
 
 
 def _write_text(relative: str, content: str) -> Path:
@@ -75,6 +88,8 @@ def render_copy(values: dict[str, object]) -> list[Path]:
         for filename in COPY_FILES:
             template = _read_template(TEMPLATES / "copy" / locale / f"{filename}.tmpl")
             content = _replace(template, replacements, html_target=False)
+            if filename in COPY_LIMITS:
+                content = content[: COPY_LIMITS[filename]].rstrip()
             outputs.append(_write_text(f"out/copy/{locale}/{filename}.txt", content))
     return outputs
 

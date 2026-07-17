@@ -32,15 +32,26 @@ def _font(size: int) -> ImageFont.FreeTypeFont:
     )
 
 
-def _fit_font(draw: ImageDraw.ImageDraw, text: str, maximum: int, start: int) -> ImageFont.FreeTypeFont:
+def _fit_text(
+    draw: ImageDraw.ImageDraw, text: str, maximum: int, start: int
+) -> tuple[str, ImageFont.FreeTypeFont]:
     size = start
-    while size > 24:
+    while True:
         font = _font(size)
         box = draw.textbbox((0, 0), text, font=font)
         if box[2] - box[0] <= maximum:
-            return font
-        size -= 2
-    return _font(size)
+            return text, font
+        if size == 24:
+            break
+        size = max(24, size - 2)
+
+    rendered = text
+    while rendered:
+        box = draw.textbbox((0, 0), rendered, font=font)
+        if box[2] - box[0] <= maximum:
+            break
+        rendered = rendered[:-1]
+    return rendered, font
 
 
 def make_screen(values: dict[str, object], index: int) -> Image.Image:
@@ -54,13 +65,16 @@ def make_screen(values: dict[str, object], index: int) -> Image.Image:
         draw.line((0, y, SCREEN_W, y), fill=_mix(light, dark, amount))
 
     app_name = str(values["app_name"])
-    title_font = _fit_font(draw, app_name, SCREEN_W - 150, 82)
-    draw.text((76, 116), app_name, fill=(255, 255, 255), font=title_font)
+    rendered_name, title_font = _fit_text(draw, app_name, SCREEN_W - 150, 82)
+    draw.text((76, 116), rendered_name, fill=(255, 255, 255), font=title_font)
+    rendered_tagline, tagline_font = _fit_text(
+        draw, str(values["tagline"]), SCREEN_W - 150, 38
+    )
     draw.text(
         (76, 230),
-        str(values["tagline"]),
+        rendered_tagline,
         fill=(235, 238, 248),
-        font=_fit_font(draw, str(values["tagline"]), SCREEN_W - 150, 38),
+        font=tagline_font,
     )
 
     panel = (255, 255, 255)

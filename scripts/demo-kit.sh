@@ -6,6 +6,8 @@
 set -eu
 
 WORKDIR="${1:?usage: scripts/demo-kit.sh <workdir>}"
+mkdir -p "$WORKDIR"
+WORKDIR=$(cd "$WORKDIR" && pwd)
 TOOLS="$(cd "$(dirname "$0")/../tools" && pwd)"
 
 : "${GITMOOT_INPUT_APP_NAME:=Waybread}"
