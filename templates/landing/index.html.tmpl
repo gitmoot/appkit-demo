@@ -1,3 +1,4 @@
+<!-- Before hosting: replace ./og.png in both og:image and twitter:image with the image's absolute public URL. -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -10,6 +11,7 @@
   <meta property="og:type" content="website">
   <meta property="og:image" content="./og.png">
   <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="./og.png">
   <link rel="icon" type="image/png" href="{favicon_data_uri}">
   <style>
     :root { --brand: {brand_color}; --accent: color-mix(in srgb, var(--brand) 40%, white); --night: #07090d; --surface: #0e1219; --raised: #131923; --ink: #f7f9fc; --muted: #a9b1bf; --line: rgba(255,255,255,.11); }
@@ -164,6 +166,6 @@
       <div class="shell"><div><p class="eyebrow">Ready when you are</p><h2>For iPhone — iPad coming soon</h2><p>{tagline}</p></div><span class="store-pill">Coming soon to the App Store</span></div>
     </section>
   </main>
-  <footer><div class="shell"><span>© {developer_entity} · <a href="mailto:{support_email}">{support_email}</a></span><nav aria-label="Legal"><a href="./legal/terms.html">Terms</a><a href="./legal/privacy.html">Privacy</a></nav></div></footer>
+  <footer><div class="shell"><span>© {developer_entity} · <a href="mailto:{support_email_href}">{support_email}</a></span><nav aria-label="Legal"><a href="./legal/terms.html">Terms</a><a href="./legal/privacy.html">Privacy</a></nav></div></footer>
 </body>
 </html>

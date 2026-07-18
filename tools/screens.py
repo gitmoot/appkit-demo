@@ -155,7 +155,7 @@ def _draw_magnifier(
     draw.line((x + 13, y + 13, x + 29, y + 29), fill=color, width=6)
 
 
-def _draw_spark(
+def draw_spark(
     draw: ImageDraw.ImageDraw,
     center: tuple[int, int],
     radius: int,
@@ -191,7 +191,7 @@ def _draw_feature_glyph(
         )
         draw.line((x, y - 78, x + 78, y + 66, x - 78, y + 66, x, y - 78), fill=(255, 255, 255), width=16)
     else:
-        _draw_spark(draw, center, 82, (255, 255, 255))
+        draw_spark(draw, center, 82, (255, 255, 255))
 
 
 def _draw_tab_icon(
@@ -299,7 +299,7 @@ def _detail_screen(brand: tuple[int, int, int]) -> Image.Image:
 
     hero = (64, 250, 1114, 906)
     _diagonal_gradient(image, hero, _mix(brand, CARD, 0.58), brand, 34)
-    _draw_spark(draw, (589, 578), 116, (255, 255, 255))
+    draw_spark(draw, (589, 578), 116, (255, 255, 255))
     draw.ellipse((515, 504, 663, 652), outline=(255, 255, 255), width=10)
 
     draw.text((64, 984), "Getting started", font=_font(56, extra=True), fill=INK)
@@ -368,7 +368,7 @@ def _stats_screen(brand: tuple[int, int, int]) -> Image.Image:
         if index % 2:
             draw.ellipse((glyph_x + 22, glyph_y + 22, glyph_x + 52, glyph_y + 52), fill=brand)
         else:
-            _draw_spark(draw, (glyph_x + 37, glyph_y + 37), 23, brand)
+            draw_spark(draw, (glyph_x + 37, glyph_y + 37), 23, brand)
         draw.text((box[0] + 54, box[1] + 164), value, font=_font(72, extra=True), fill=INK)
         draw.text((box[0] + 54, box[1] + 270), label, font=_font(30), fill=SECONDARY)
 

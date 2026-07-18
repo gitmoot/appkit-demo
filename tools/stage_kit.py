@@ -33,6 +33,7 @@ class VerificationError(RuntimeError):
 
 
 MAX_OUTPUT_BYTES = 15 * 1024 * 1024
+MAX_ZIP_BYTES = 20 * 1024 * 1024
 
 
 def _expected_relpaths(values: dict[str, object]) -> list[str]:
@@ -182,11 +183,10 @@ def _require_exact_tree(expected: set[str]) -> None:
         raise VerificationError("unexpected_output")
 
 
-def _output_size(out: Path) -> int:
+def _paths_size(paths: list[Path]) -> int:
     return sum(
         path.stat().st_size
-        for path in sorted(out.rglob("*"), key=lambda item: item.as_posix())
-        if path.is_file() and not path.is_symlink()
+        for path in sorted(paths, key=lambda item: item.as_posix())
     )
 
 
@@ -216,9 +216,12 @@ def main() -> None:
         _require_exact_tree(base_relpaths | {"manifest.json"})
         zip_path = _write_zip(artifact_paths, manifest_path)
         _require_exact_tree(base_relpaths | {"manifest.json", "launch-kit.zip"})
-        artifact_bytes = _output_size(Path.cwd() / "out")
+        artifact_bytes = _paths_size(artifact_paths)
         if artifact_bytes > MAX_OUTPUT_BYTES:
             raise VerificationError("artifact_budget")
+        zip_bytes = zip_path.stat().st_size
+        if zip_bytes > MAX_ZIP_BYTES:
+            raise VerificationError("zip_budget")
 
         final_digests = dict(digests)
         final_digests["out/manifest.json"] = sha256_file(manifest_path)
@@ -232,6 +235,7 @@ def main() -> None:
                 artifact_count=artifact_count,
                 artifact_bytes=artifact_bytes,
                 manifest_sha256=manifest_sha,
+                zip_bytes=zip_bytes,
             ),
         )
     except InputError as error:

@@ -8,7 +8,7 @@ Appkit Demo is a deterministic, shell-only Gitmoot pipeline that turns a small t
 
 Every stage command is fixed (`python3 tools/stage_<id>.py`). Inputs are read only from the bounded `GITMOOT_INPUT_*` variables. There is no network access, input interpolation into shell, shared stage filesystem, clock, randomness, or host/run metadata in artifacts. Each stage writes only beneath its own `out/` and emits exactly one final `gitmoot_result` JSON line on stdout; diagnostics go to stderr.
 
-Image identity uses SHA-256 over canonical RGBA pixels. Text identity uses raw file bytes. Each stage summary includes the canonical input digest plus exact Pillow and zlib runtime fingerprints. The kit fails closed unless the v1 upstream context is complete, untruncated, successful, and exactly matches its regeneration. The manifest uses file-byte SHA-256, while the ZIP uses sorted stored entries, fixed 1980 metadata, and fixed Unix file attributes. Manifest SHA-256 values are per-host because PNG encoder bytes may vary with zlib; cross-stage image verification uses canonical RGBA identities. The final `out/` tree fails closed above 15 MiB.
+Image identity uses SHA-256 over canonical RGBA pixels. Text identity uses raw file bytes. Each stage summary includes the canonical input digest plus exact Pillow and zlib runtime fingerprints. The kit fails closed unless the v1 upstream context is complete, untruncated, successful, and exactly matches its regeneration. The manifest uses file-byte SHA-256, while the ZIP uses sorted stored entries, fixed 1980 metadata, and fixed Unix file attributes. Manifest SHA-256 values are per-host because PNG encoder bytes may vary with zlib; cross-stage image verification uses canonical RGBA identities. Unique kit artifacts fail closed above 15 MiB, and the reproducible ZIP has a separate 20 MiB ceiling.
 
 ## Register and run
 
@@ -38,6 +38,10 @@ curl -sS -X POST http://127.0.0.1:8792/v1/pipelines/appkit-demo/runs \
 ```
 
 The service is the proof-receipt demonstration: it attests typed-input admission and successful execution. Current Gitmoot bundles collect every stage's `out/` tree beneath `artifacts/<stage>/`; artifact digests are bound into the proof. The authoritative assembled kit is `artifacts/kit/launch-kit.zip`, while compose and content artifacts remain useful previews.
+
+## Service delivery & privacy
+
+Served bundles include the generated stage artifacts, with their digests bound into the proof by engine #1015. Public receipts strip caller inputs and stage summaries. On this demo deployment, a separate unexposable `appkit-notify` operator-notification pipeline also sends the service operator a Telegram message for each served order with the kit attached. Callers should therefore treat served kits as visible to the service operator.
 
 ## Launch-kit layout
 
