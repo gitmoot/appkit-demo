@@ -23,7 +23,9 @@ def main() -> None:
         values = load_inputs()
         frame_compose.verify_assets()
         prepare_output_tree()
-        outputs = screens.render_screenshots(values)
+        framed = screens.build_framed_screens(values)
+        framed_pngs = screens.encode_framed_screens(framed)
+        outputs = screens.render_screenshots(values, framed_pngs)
         digests = identity_digests(outputs, Path.cwd())
         emit_result("implemented", success_summary(values, digests))
     except InputError as error:

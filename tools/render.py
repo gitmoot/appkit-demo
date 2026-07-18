@@ -1,10 +1,15 @@
-"""Shared deterministic copy, landing-page, and legal renderers."""
+"""Shared deterministic store, web, legal, and brand-asset renderers."""
 
 from __future__ import annotations
 
+import base64
+import html
 import re
 from pathlib import Path
 
+from PIL import Image, ImageDraw, ImageFont
+
+import frame_compose
 from inputs import escape_html
 from stage_support import safe_output_path
 
@@ -16,19 +21,94 @@ COPY_FILES = (
     "keywords",
     "name",
     "promotional_text",
+    "release_notes",
     "subtitle",
 )
 COPY_LIMITS = {
-    "keywords": 100,
     "name": 30,
     "promotional_text": 170,
     "subtitle": 30,
 }
+ICON_SIZES = (1024, 180, 167, 152, 120, 32)
 _TOKEN_RE = re.compile(r"\{([a-z][a-z0-9_]*)\}")
 
 
 class TemplateError(RuntimeError):
     pass
+
+
+def _rgb(hex_color: str) -> tuple[int, int, int]:
+    return tuple(int(hex_color[index : index + 2], 16) for index in (1, 3, 5))
+
+
+def _mix(
+    start: tuple[int, int, int], end: tuple[int, int, int], amount: float
+) -> tuple[int, int, int]:
+    return tuple(round(a + (b - a) * amount) for a, b in zip(start, end))
+
+
+def _font(size: int, extra: bool = False) -> ImageFont.FreeTypeFont:
+    path = frame_compose.FONT_PATH if extra else frame_compose.BOLD_FONT_PATH
+    return ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.BASIC)
+
+
+def _fit_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    maximum: int,
+    start: int,
+    minimum: int,
+    extra: bool = True,
+) -> tuple[str, ImageFont.FreeTypeFont]:
+    size = start
+    while True:
+        font = _font(size, extra=extra)
+        box = draw.textbbox((0, 0), text, font=font)
+        if box[2] - box[0] <= maximum:
+            return text, font
+        if size == minimum:
+            break
+        size = max(minimum, size - 2)
+    rendered = text
+    while rendered:
+        box = draw.textbbox((0, 0), rendered, font=font)
+        if box[2] - box[0] <= maximum:
+            break
+        rendered = rendered[:-1]
+    return rendered, font
+
+
+def _centered_text(
+    draw: ImageDraw.ImageDraw,
+    center: tuple[int, int],
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    fill: tuple[int, int, int],
+) -> None:
+    box = draw.textbbox((0, 0), text, font=font)
+    x = center[0] - (box[2] - box[0]) // 2 - box[0]
+    y = center[1] - (box[3] - box[1]) // 2 - box[1]
+    draw.text((x, y), text, font=font, fill=fill)
+
+
+def _gradient_square(
+    size: tuple[int, int],
+    start: tuple[int, int, int],
+    end: tuple[int, int, int],
+) -> Image.Image:
+    width, height = size
+    image = Image.new("RGB", size, start)
+    draw = ImageDraw.Draw(image)
+    maximum = width + height - 2
+    for step in range(maximum + 1):
+        amount = step / maximum if maximum else 0.0
+        color = _mix(start, end, amount)
+        first_x = max(0, step - (height - 1))
+        first_y = step - first_x
+        last_x = min(width - 1, step)
+        last_y = step - last_x
+        draw.line((first_x, first_y, last_x, last_y), fill=color, width=2)
+    return image
 
 
 def _read_template(path: Path) -> str:
@@ -37,16 +117,22 @@ def _read_template(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _replace(template: str, replacements: dict[str, object], html_target: bool) -> str:
+def _replace(
+    template: str,
+    replacements: dict[str, object],
+    html_target: bool,
+    safe_html_tokens: frozenset[str] = frozenset(),
+) -> str:
     def substitute(match: re.Match[str]) -> str:
         key = match.group(1)
         try:
             value = replacements[key]
         except KeyError as error:
             raise TemplateError("unknown template token") from error
-        return escape_html(value) if html_target else str(value)
+        if html_target and key not in safe_html_tokens:
+            return escape_html(value)
+        return str(value)
 
-    # re.sub scans only the template. Braces returned by the callback are inert.
     return _TOKEN_RE.sub(substitute, template)
 
 
@@ -54,6 +140,17 @@ def _write_text(relative: str, content: str) -> Path:
     output = safe_output_path(relative)
     output.write_text(content, encoding="utf-8", newline="\n")
     return output
+
+
+def _write_png(relative: str, image: Image.Image) -> tuple[Path, bytes]:
+    output = safe_output_path(relative)
+    data = frame_compose.png_bytes(image)
+    output.write_bytes(data)
+    return output, data
+
+
+def _data_uri(data: bytes) -> str:
+    return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
 
 
 def _base_replacements(values: dict[str, object]) -> dict[str, object]:
@@ -69,16 +166,44 @@ def _base_replacements(values: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _icon_relpath(size: int) -> str:
+    return "out/icons/icon-1024.png" if size == 1024 else f"out/icons/icon-{size}.png" if size != 32 else "out/icons/favicon-32.png"
+
+
 def expected_content_relpaths(values: dict[str, object]) -> list[str]:
     paths = [
+        "out/README.md",
         "out/landing/index.html",
+        "out/landing/assets/device_1.png",
+        "out/landing/assets/device_2.png",
+        "out/landing/assets/device_3.png",
+        "out/landing/legal/privacy.html",
+        "out/landing/legal/terms.html",
+        "out/landing/og.png",
         "out/legal/privacy.md",
         "out/legal/terms.md",
     ]
+    paths.extend(_icon_relpath(size) for size in ICON_SIZES)
     for locale in list(values["locales"]):
         for filename in COPY_FILES:
             paths.append(f"out/copy/{locale}/{filename}.txt")
     return sorted(paths)
+
+
+def _normalize_keywords(rendered: str) -> str:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for raw in rendered.split(","):
+        keyword = raw.strip()
+        folded = keyword.casefold()
+        if not keyword or folded in seen:
+            continue
+        candidate = ",".join(unique + [keyword])
+        if len(candidate) > 100:
+            break
+        unique.append(keyword)
+        seen.add(folded)
+    return ",".join(unique)
 
 
 def render_copy(values: dict[str, object]) -> list[Path]:
@@ -88,38 +213,254 @@ def render_copy(values: dict[str, object]) -> list[Path]:
         for filename in COPY_FILES:
             template = _read_template(TEMPLATES / "copy" / locale / f"{filename}.tmpl")
             content = _replace(template, replacements, html_target=False)
-            if filename in COPY_LIMITS:
+            if filename == "keywords":
+                content = _normalize_keywords(content)
+            elif filename in COPY_LIMITS:
                 content = content[: COPY_LIMITS[filename]].rstrip()
+            if filename == "description" and len(content) > 4000:
+                raise TemplateError("description exceeds App Store limit")
             outputs.append(_write_text(f"out/copy/{locale}/{filename}.txt", content))
     return outputs
 
 
-def render_landing(values: dict[str, object]) -> Path:
-    replacements = _base_replacements(values)
-    replacements["screenshot_locale"] = list(values["locales"])[0]
-    template = _read_template(TEMPLATES / "landing" / "index.html.tmpl")
-    return _write_text(
-        "out/landing/index.html",
-        _replace(template, replacements, html_target=True),
+def _master_icon(values: dict[str, object]) -> Image.Image:
+    brand = _rgb(str(values["brand_color"]))
+    start = _mix(brand, (255, 255, 255), 0.18)
+    end = _mix(brand, (0, 0, 0), 0.18)
+    image = _gradient_square((1024, 1024), start, end)
+    draw = ImageDraw.Draw(image)
+    letter = str(values["app_name"])[0].upper()[0]
+    rendered, font = _fit_text(draw, letter, 650, 560, 200)
+    _centered_text(draw, (512, 500), rendered, font, (255, 255, 255))
+    return image
+
+
+def render_icons(values: dict[str, object]) -> tuple[list[Path], dict[int, bytes]]:
+    master = _master_icon(values)
+    outputs: list[Path] = []
+    encoded: dict[int, bytes] = {}
+    for size in ICON_SIZES:
+        image = master if size == 1024 else master.resize((size, size), Image.Resampling.LANCZOS)
+        output, data = _write_png(_icon_relpath(size), image)
+        outputs.append(output)
+        encoded[size] = data
+    header = master.resize((64, 64), Image.Resampling.LANCZOS)
+    encoded[64] = frame_compose.png_bytes(header)
+    return outputs, encoded
+
+
+def _og_image(
+    values: dict[str, object], framed: dict[int, Image.Image]
+) -> Image.Image:
+    brand = _rgb(str(values["brand_color"]))
+    image = _gradient_square(
+        (1200, 630),
+        _mix(brand, (255, 255, 255), 0.10),
+        _mix(brand, (0, 0, 0), 0.32),
     )
+    draw = ImageDraw.Draw(image)
+    dot = _mix(brand, (255, 255, 255), 0.42)
+    for y in range(26, 630, 34):
+        for x in range(26, 1200, 34):
+            draw.ellipse((x, y, x + 3, y + 3), fill=dot)
+
+    app_name, app_font = _fit_text(
+        draw, str(values["app_name"]), 720, 82, 34
+    )
+    draw.text((66, 126), app_name, font=app_font, fill=(255, 255, 255))
+    tagline, tagline_font = _fit_text(
+        draw, str(values["tagline"]), 690, 34, 20, extra=False
+    )
+    draw.text((70, 250), tagline, font=tagline_font, fill=(248, 250, 252))
+    draw.rounded_rectangle((68, 516, 384, 574), radius=29, fill=_mix(brand, (0, 0, 0), 0.40))
+    _centered_text(
+        draw,
+        (226, 545),
+        "Launch kit by appkit-demo",
+        _font(20),
+        (255, 255, 255),
+    )
+
+    shot = framed[1].resize((267, 580), Image.Resampling.LANCZOS)
+    shadow = Image.new("RGB", (287, 600), _mix(brand, (0, 0, 0), 0.42))
+    image.paste(shadow, (857, 30))
+    image.paste(shot, (867, 20))
+    return image
+
+
+def render_landing(
+    values: dict[str, object],
+    framed: dict[int, Image.Image],
+    icon_pngs: dict[int, bytes],
+    device_pngs: dict[int, bytes],
+) -> list[Path]:
+    replacements = _base_replacements(values)
+    replacements.update(
+        {
+            "favicon_data_uri": _data_uri(icon_pngs[32]),
+            "icon_data_uri": _data_uri(icon_pngs[64]),
+        }
+    )
+    outputs: list[Path] = []
+    for index in (1, 2, 3):
+        output = safe_output_path(f"out/landing/assets/device_{index}.png")
+        output.write_bytes(device_pngs[index])
+        outputs.append(output)
+    outputs.append(
+        _write_text(
+            "out/landing/index.html",
+            _replace(
+                _read_template(TEMPLATES / "landing" / "index.html.tmpl"),
+                replacements,
+                html_target=True,
+            ),
+        )
+    )
+    og_path, _ = _write_png("out/landing/og.png", _og_image(values, framed))
+    outputs.append(og_path)
+    for name in ("privacy", "terms"):
+        markdown = _replace(
+            _read_template(TEMPLATES / "legal" / f"{name}.md.tmpl"),
+            replacements,
+            html_target=False,
+        )
+        legal_replacements = dict(replacements)
+        legal_replacements.update(
+            {
+                "icon_data_uri": _data_uri(icon_pngs[64]),
+                "legal_content": _markdown_to_html(markdown),
+                "page_title": "Privacy Policy" if name == "privacy" else "Terms of Service",
+            }
+        )
+        outputs.append(
+            _write_text(
+                f"out/landing/legal/{name}.html",
+                _replace(
+                    _read_template(TEMPLATES / "legal" / f"{name}.html.tmpl"),
+                    legal_replacements,
+                    html_target=True,
+                    safe_html_tokens=frozenset(("legal_content",)),
+                ),
+            )
+        )
+    return outputs
+
+
+def _markdown_to_html(markdown: str) -> str:
+    """Render the deliberately small legal Markdown subset deterministically."""
+
+    rendered: list[str] = []
+    for raw_line in markdown.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("## "):
+            rendered.append(f"<h2>{html.escape(line[3:], quote=True)}</h2>")
+        elif line.startswith("# "):
+            rendered.append(f"<h1>{html.escape(line[2:], quote=True)}</h1>")
+        elif line.startswith("**") and line.endswith("**") and len(line) > 4:
+            rendered.append(
+                f'<p class="effective">{html.escape(line[2:-2], quote=True)}</p>'
+            )
+        else:
+            rendered.append(f"<p>{html.escape(line, quote=True)}</p>")
+    return "".join(rendered)
 
 
 def render_legal(values: dict[str, object]) -> list[Path]:
     replacements = _base_replacements(values)
     outputs: list[Path] = []
     for name in ("privacy", "terms"):
-        template = _read_template(TEMPLATES / "legal" / f"{name}.md.tmpl")
         outputs.append(
             _write_text(
                 f"out/legal/{name}.md",
-                _replace(template, replacements, html_target=False),
+                _replace(
+                    _read_template(TEMPLATES / "legal" / f"{name}.md.tmpl"),
+                    replacements,
+                    html_target=False,
+                ),
             )
         )
     return outputs
 
 
-def render_all(values: dict[str, object]) -> list[Path]:
+def _kit_readme(values: dict[str, object]) -> str:
+    app_name = str(values["app_name"]).replace("\\", "\\\\").replace("|", "\\|")
+    rows: list[tuple[str, str, str]] = []
+    copy_destinations = {
+        "description": ("Store description", "App Store Connect > App Information > Description"),
+        "keywords": ("Search keywords", "App Store Connect > App Information > Keywords"),
+        "name": ("Store name", "App Store Connect > App Information > Name"),
+        "promotional_text": ("Promotional copy", "App Store Connect > App Information > Promotional Text"),
+        "release_notes": ("Launch release notes", "App Store Connect > What's New"),
+        "subtitle": ("Store subtitle", "App Store Connect > App Information > Subtitle"),
+    }
+    for locale in list(values["locales"]):
+        for filename in COPY_FILES:
+            what, where = copy_destinations[filename]
+            rows.append((f"copy/{locale}/{filename}.txt", what, where))
+        for index in (1, 2, 3):
+            rows.append(
+                (
+                    f"screenshots/{locale}/shot_{index}.png",
+                    f"Framed marketing screenshot {index}",
+                    "App Store Connect > iPhone 6.7-inch screenshot slots",
+                )
+            )
+    for size in (1024, 180, 167, 152, 120):
+        rows.append((f"icons/icon-{size}.png", f"{size}px app icon", "Your app project and store listing"))
+    rows.extend(
+        (
+            ("icons/favicon-32.png", "Browser favicon", "Your website favicon"),
+            ("landing/index.html", "Single-file product page", "Host at your marketing URL"),
+            ("landing/assets/device_1.png", "Transparent home device render", "Displayed by landing/index.html"),
+            ("landing/assets/device_2.png", "Transparent detail device render", "Displayed by landing/index.html"),
+            ("landing/assets/device_3.png", "Transparent progress device render", "Displayed by landing/index.html"),
+            ("landing/og.png", "Social sharing image", "Host beside landing/index.html"),
+            ("landing/legal/privacy.html", "Hosted privacy page", "Host and paste its URL into Privacy Policy URL"),
+            ("landing/legal/terms.html", "Hosted terms page", "Host beside the privacy page"),
+            ("legal/privacy.md", "Editable privacy source", "Keep as legal source and review before launch"),
+            ("legal/terms.md", "Editable terms source", "Keep as legal source and review before launch"),
+            ("README.md", "This handoff guide", "Start here"),
+            ("manifest.json", "Byte-level artifact inventory", "Use for local integrity checks"),
+            ("launch-kit.zip", "Complete launch kit archive", "Share with your launch team"),
+        )
+    )
+    lines = [
+        f"# {app_name} Launch Kit",
+        "",
+        f"Everything needed to prepare {app_name} for its first real launch, organized by destination.",
+        "",
+        "| File | What it is | Where it goes |",
+        "| --- | --- | --- |",
+    ]
+    for path, what, where in sorted(rows, key=lambda row: row[0]):
+        lines.append(f"| `{path}` | {what} | {where} |")
+    lines.extend(
+        (
+            "",
+            "## Known limits (v1)",
+            "",
+            "Real-screenshot ingestion is out of scope because the flat typed schema cannot carry files. Screens are synthesized deterministically from brand inputs. The landing page ships in English; localization is a follow-up.",
+            "",
+            "Review legal text and store metadata before publishing.",
+            "",
+        )
+    )
+    return "\n".join(lines)
+
+
+def render_all(
+    values: dict[str, object],
+    framed: dict[int, Image.Image],
+    device_pngs: dict[int, bytes],
+) -> list[Path]:
     outputs = render_copy(values)
-    outputs.append(render_landing(values))
+    icon_paths, icon_pngs = render_icons(values)
+    outputs.extend(icon_paths)
+    outputs.extend(
+        render_landing(values, framed, icon_pngs, device_pngs)
+    )
     outputs.extend(render_legal(values))
+    outputs.append(_write_text("out/README.md", _kit_readme(values)))
     return sorted(outputs, key=lambda path: path.as_posix())

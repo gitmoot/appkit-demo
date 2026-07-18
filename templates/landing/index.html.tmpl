@@ -3,56 +3,167 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="{tagline}">
   <title>{app_name} — {tagline}</title>
+  <meta name="description" content="{tagline}">
+  <meta property="og:title" content="{app_name} — {tagline}">
+  <meta property="og:description" content="{tagline}">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="./og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" type="image/png" href="{favicon_data_uri}">
   <style>
-    :root { color-scheme: dark; --brand: {brand_color}; --ink: #f7f7fb; --muted: #b6b8c5; }
+    :root { --brand: {brand_color}; --accent: color-mix(in srgb, var(--brand) 40%, white); --night: #07090d; --surface: #0e1219; --raised: #131923; --ink: #f7f9fc; --muted: #a9b1bf; --line: rgba(255,255,255,.11); }
     * { box-sizing: border-box; }
-    body { margin: 0; background: #0e0e12; color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    a { color: inherit; }
-    .wrap { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
-    .hero { min-height: 72vh; display: grid; align-items: center; padding: 96px 0 72px; background: radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--brand) 62%, transparent), transparent 58%); }
-    .eyebrow { color: #d9d3ff; font-size: .82rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
-    h1 { max-width: 900px; margin: 20px 0; font-size: clamp(3rem, 8vw, 7rem); line-height: .94; letter-spacing: -.055em; }
-    .lede { max-width: 680px; color: var(--muted); font-size: clamp(1.15rem, 2.4vw, 1.55rem); line-height: 1.55; }
-    .accent { color: var(--brand); }
-    .headlines { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; padding: 88px 0 56px; }
-    .headlines p { margin: 0; font-size: clamp(1.4rem, 3vw, 2.5rem); font-weight: 750; line-height: 1.08; }
-    .shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; padding-bottom: 96px; }
-    .shots img { display: block; width: 100%; height: auto; border-radius: 22px; box-shadow: 0 28px 80px #0008; }
-    footer { border-top: 1px solid #ffffff18; color: var(--muted); padding: 28px 0 44px; }
-    footer .wrap { display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
-    footer nav { display: flex; gap: 18px; }
-    @media (max-width: 760px) { .headlines, .shots { grid-template-columns: 1fr; } .hero { padding-top: 72px; } }
+    html { scroll-behavior: smooth; scroll-padding-top: 88px; }
+    body { margin: 0; color: var(--ink); background: var(--night); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: inherit; text-decoration: none; }
+    img { display: block; max-width: 100%; }
+    .shell { width: min(1100px, calc(100% - 48px)); margin: 0 auto; }
+    .site-header { position: sticky; top: 0; z-index: 20; height: 78px; display: flex; align-items: center; border-bottom: 1px solid var(--line); background: rgba(7,9,13,.84); backdrop-filter: blur(18px); }
+    .site-header .shell { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 32px; }
+    .wordmark { min-width: 0; display: inline-flex; align-items: center; gap: 12px; width: fit-content; font-size: 1.05rem; font-weight: 800; letter-spacing: -.025em; }
+    .wordmark img { width: 40px; height: 40px; border-radius: 11px; }
+    .wordmark span { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .site-nav { display: flex; align-items: center; gap: 30px; color: var(--muted); font-size: .9rem; font-weight: 650; }
+    .site-nav a, footer a { transition: color .2s ease; }
+    .site-nav a:hover, footer a:hover { color: var(--ink); }
+    .button { justify-self: end; display: inline-flex; min-height: 44px; align-items: center; justify-content: center; padding: 0 19px; border: 1px solid color-mix(in srgb, var(--brand) 72%, white); border-radius: 13px; background: linear-gradient(rgba(0,0,0,.6),rgba(0,0,0,.6)), var(--brand); color: white; font-size: .9rem; font-weight: 780; box-shadow: 0 10px 32px color-mix(in srgb, var(--brand) 25%, transparent); transition: transform .2s ease, box-shadow .2s ease; }
+    .button:hover { transform: translateY(-2px); box-shadow: 0 14px 40px color-mix(in srgb, var(--brand) 34%, transparent); }
+    .eyebrow { margin: 0 0 18px; color: var(--accent); font-size: .75rem; font-weight: 820; letter-spacing: .16em; text-transform: uppercase; }
+    .hero { overflow: hidden; border-bottom: 1px solid var(--line); background: radial-gradient(circle at 78% 35%, color-mix(in srgb, var(--brand) 12%, transparent), transparent 32%); }
+    .hero .shell { min-height: 720px; display: grid; grid-template-columns: minmax(0, .95fr) minmax(400px, .72fr); gap: 64px; align-items: center; padding: 66px 0 84px; }
+    .hero-copy { position: relative; z-index: 3; max-width: 610px; animation: rise .68s ease both; }
+    h1 { margin: 0; max-width: 680px; overflow-wrap: anywhere; font-size: clamp(4.2rem, 8vw, 7rem); line-height: .88; letter-spacing: -.07em; }
+    .hero-description { margin: 26px 0 0; color: var(--ink); font-size: clamp(1.25rem, 2.3vw, 1.55rem); line-height: 1.45; }
+    .hero-blurb { max-width: 560px; margin: 14px 0 0; color: var(--muted); font-size: 1rem; line-height: 1.7; }
+    .platforms { margin: 28px 0 15px; color: #dfe4ec; font-size: .88rem; font-weight: 700; letter-spacing: .015em; }
+    .store-pill { display: inline-flex; min-height: 46px; align-items: center; padding: 0 17px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.06); color: #edf1f7; font-size: .88rem; font-weight: 720; }
+    .hero-stage { position: relative; justify-self: end; width: min(100%, 430px); min-height: 560px; isolation: isolate; animation: rise .78s .08s ease both; }
+    .hero-stage::before { content: ""; position: absolute; z-index: 0; width: 118%; aspect-ratio: 1; left: 50%; top: 50%; transform: translate(-50%,-50%); border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--brand) 44%, transparent) 0%, color-mix(in srgb, var(--brand) 17%, transparent) 42%, transparent 72%); filter: blur(9px); }
+    .hero-device { position: absolute; left: 50%; height: auto; transform-origin: 50% 75%; transition: transform .4s ease; }
+    .hero-device.front { z-index: 2; width: min(300px,82%); bottom: -22px; transform: translateX(-33%) rotate(-3deg); filter: drop-shadow(0 34px 64px rgba(0,0,0,.6)); }
+    .hero-device.back { z-index: 1; width: min(224px,62%); top: 52%; transform: translate(-4%,-56%) rotate(8deg); filter: drop-shadow(0 26px 48px rgba(0,0,0,.48)); opacity: .92; }
+    .hero-stage:hover .front { transform: translateX(-35%) translateY(-7px) rotate(-4deg); }
+    .hero-stage:hover .back { transform: translate(-2%,-58%) rotate(10deg); }
+    section { scroll-margin-top: 78px; }
+    .section-block { padding: 104px 0; }
+    .section-heading { max-width: 680px; margin: 0 0 46px; }
+    .section-heading h2 { margin: 0; font-size: clamp(2.6rem, 5vw, 4.7rem); line-height: .98; letter-spacing: -.055em; }
+    .shots { background: #090c11; border-bottom: 1px solid var(--line); }
+    .shot-rail { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 18px; }
+    .shot-card { margin: 0; min-width: 0; overflow: hidden; padding: 34px 20px 26px; border: 1px solid var(--line); border-radius: 22px; background: linear-gradient(180deg,rgba(255,255,255,.055),rgba(255,255,255,.025)); }
+    .shot-card img { width: 88%; margin: 0 auto -96px; filter: drop-shadow(0 24px 36px rgba(0,0,0,.48)); transition: transform .35s ease; }
+    .shot-card:hover img { transform: translateY(-7px); }
+    .shot-card figcaption { position: relative; z-index: 2; margin: 0 -20px -26px; padding: 25px 22px 27px; border-top: 1px solid var(--line); background: rgba(13,17,24,.96); }
+    .shot-card h3 { margin: 0 0 9px; overflow-wrap: anywhere; font-size: 1.25rem; letter-spacing: -.02em; }
+    .shot-card p { margin: 0; color: var(--muted); font-size: .92rem; line-height: 1.55; }
+    .features { overflow: hidden; border-bottom: 1px solid var(--line); background: var(--surface); }
+    .feature-rail { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(280px,34%); gap: 16px; overflow-x: auto; padding: 2px 0 22px; scroll-snap-type: x mandatory; scrollbar-color: color-mix(in srgb,var(--brand) 46%, #505763) transparent; }
+    .feature-card { min-height: 250px; display: flex; flex-direction: column; align-items: flex-start; padding: 28px; border: 1px solid var(--line); border-radius: 20px; background: var(--raised); scroll-snap-align: start; }
+    .badge { display: inline-flex; min-height: 28px; align-items: center; padding: 0 10px; border: 1px solid color-mix(in srgb,var(--brand) 68%,white); border-radius: 999px; background: linear-gradient(rgba(0,0,0,.55),rgba(0,0,0,.55)),var(--brand); color: white; font-size: .68rem; font-weight: 820; letter-spacing: .08em; text-transform: uppercase; }
+    .badge.outline { background: transparent; color: var(--accent); }
+    .feature-card h3 { margin: auto 0 10px; overflow-wrap: anywhere; font-size: 1.42rem; letter-spacing: -.025em; }
+    .feature-card p { margin: 0; color: var(--muted); line-height: 1.6; }
+    .steps { border-bottom: 1px solid var(--line); }
+    .step-grid { display: grid; grid-template-columns: repeat(3,1fr); border-top: 1px solid var(--line); }
+    .step { padding: 36px 34px 10px 0; }
+    .step + .step { padding-left: 34px; border-left: 1px solid var(--line); }
+    .step-number { width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid color-mix(in srgb,var(--brand) 72%,white); border-radius: 50%; background: linear-gradient(rgba(0,0,0,.58),rgba(0,0,0,.58)),var(--brand); color: white; font-weight: 850; }
+    .step h3 { margin: 28px 0 11px; font-size: 1.35rem; letter-spacing: -.025em; }
+    .step p { margin: 0; color: var(--muted); line-height: 1.65; }
+    .download { padding: 88px 0; background: radial-gradient(circle at 12% 35%,color-mix(in srgb,var(--brand) 22%,transparent),transparent 40%),color-mix(in srgb,var(--brand) 7%,var(--surface)); }
+    .download .shell { display: flex; align-items: center; justify-content: space-between; gap: 48px; }
+    .download h2 { margin: 0; font-size: clamp(2.6rem,5vw,4.7rem); line-height: .98; letter-spacing: -.055em; }
+    .download p { max-width: 620px; margin: 15px 0 0; color: var(--muted); font-size: 1.08rem; line-height: 1.6; }
+    footer { padding: 32px 0 44px; border-top: 1px solid var(--line); color: var(--muted); font-size: .9rem; }
+    footer .shell { display: flex; justify-content: space-between; gap: 26px; flex-wrap: wrap; }
+    footer nav { display: flex; gap: 22px; }
+    @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: translateY(0); } }
+    @media (max-width: 760px) {
+      .shell { width: min(100% - 32px,620px); }
+      .site-header { height: 70px; }
+      .site-header .shell { grid-template-columns: 1fr auto; }
+      .site-nav { display: none; }
+      .wordmark span { max-width: 150px; }
+      .site-header .button { min-height: 40px; padding: 0 14px; }
+      .hero .shell { min-height: auto; grid-template-columns: 1fr; gap: 20px; padding: 70px 0 42px; }
+      h1 { font-size: clamp(3.8rem,18vw,5.7rem); }
+      .hero-stage { justify-self: center; width: min(100%,390px); min-height: 460px; }
+      .hero-device.front { width: min(260px,78%); bottom: -34px; }
+      .hero-device.back { width: min(192px,58%); }
+      .section-block { padding: 80px 0; }
+      .shot-rail { display: flex; overflow-x: auto; gap: 14px; padding-bottom: 18px; scroll-snap-type: x mandatory; }
+      .shot-card { flex: 0 0 min(82vw,330px); scroll-snap-align: center; }
+      .feature-rail { grid-auto-columns: min(82vw,340px); }
+      .step-grid { grid-template-columns: 1fr; }
+      .step, .step + .step { padding: 30px 0; border-left: 0; border-top: 1px solid var(--line); }
+      .step:first-child { border-top: 0; }
+      .download .shell { align-items: flex-start; flex-direction: column; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *,*::before,*::after { animation: none !important; transition: none !important; } }
   </style>
 </head>
 <body>
-  <main>
+  <header class="site-header">
+    <div class="shell">
+      <a class="wordmark" href="#top" aria-label="{app_name} home"><img src="{icon_data_uri}" alt=""><span>{app_name}</span></a>
+      <nav class="site-nav" aria-label="Primary"><a href="#features">Features</a><a href="#screens">Screens</a><a href="#how">How it works</a></nav>
+      <a class="button" href="#download">Get the app</a>
+    </div>
+  </header>
+  <main id="top">
     <section class="hero">
-      <div class="wrap">
-        <p class="eyebrow">By {developer_entity}</p>
-        <h1>{app_name}<span class="accent">.</span></h1>
-        <p class="lede">{tagline}</p>
+      <div class="shell">
+        <div class="hero-copy">
+          <p class="eyebrow">Meet your new favorite app</p>
+          <h1>{app_name}</h1>
+          <p class="hero-description">{tagline}</p>
+          <p class="hero-blurb">{headline_1} brings the things that matter into one calm, thoughtfully designed place.</p>
+          <p class="platforms">For iPhone — iPad coming soon</p>
+          <span class="store-pill">Coming soon to the App Store</span>
+        </div>
+        <div class="hero-stage" aria-label="{app_name} app previews">
+          <img class="hero-device back" src="./assets/device_2.png" alt="{app_name} detail screen">
+          <img class="hero-device front" src="./assets/device_1.png" alt="{app_name} home screen">
+        </div>
       </div>
     </section>
-    <section class="wrap" aria-label="Highlights">
-      <div class="headlines">
-        <p>{headline_1}</p>
-        <p>{headline_2}</p>
-        <p>{headline_3}</p>
+    <section class="shots section-block" id="screens">
+      <div class="shell">
+        <div class="section-heading"><p class="eyebrow">See it in action</p><h2>Made to feel familiar from the first tap.</h2></div>
+        <div class="shot-rail">
+          <figure class="shot-card"><img src="./assets/device_1.png" alt="{app_name} home screen"><figcaption><h3>{headline_1}</h3><p>Find the right next move without digging through clutter.</p></figcaption></figure>
+          <figure class="shot-card"><img src="./assets/device_2.png" alt="{app_name} detail screen"><figcaption><h3>{headline_2}</h3><p>Focused details keep every choice clear and approachable.</p></figcaption></figure>
+          <figure class="shot-card"><img src="./assets/device_3.png" alt="{app_name} progress screen"><figcaption><h3>{headline_3}</h3><p>Progress stays visible, useful, and easy to act on.</p></figcaption></figure>
+        </div>
       </div>
-      <div class="shots">
-        <img src="../screenshots/{screenshot_locale}/shot_1.png" alt="{app_name} app screen one">
-        <img src="../screenshots/{screenshot_locale}/shot_2.png" alt="{app_name} app screen two">
-        <img src="../screenshots/{screenshot_locale}/shot_3.png" alt="{app_name} app screen three">
+    </section>
+    <section class="features section-block" id="features">
+      <div class="shell">
+        <div class="section-heading"><p class="eyebrow">What you get</p><h2>The essentials, considered from day one.</h2></div>
+        <div class="feature-rail" aria-label="App features">
+          <article class="feature-card"><span class="badge">Included</span><h3>{headline_1}</h3><p>Thoughtful defaults help you start well and keep moving.</p></article>
+          <article class="feature-card"><span class="badge">Included</span><h3>{headline_2}</h3><p>A quiet interface brings useful context forward at the right moment.</p></article>
+          <article class="feature-card"><span class="badge">Included</span><h3>{headline_3}</h3><p>Simple progress cues turn small actions into visible momentum.</p></article>
+          <article class="feature-card"><span class="badge outline">Built in</span><h3>Works offline</h3><p>Your core experience stays ready even when your connection is not.</p></article>
+          <article class="feature-card"><span class="badge outline">Built in</span><h3>No account required</h3><p>Open the app and begin without another sign-up flow in the way.</p></article>
+        </div>
       </div>
+    </section>
+    <section class="steps section-block" id="how">
+      <div class="shell">
+        <div class="section-heading"><p class="eyebrow">How it works</p><h2>From download to daily rhythm in minutes.</h2></div>
+        <div class="step-grid">
+          <article class="step"><span class="step-number">1</span><h3>Download {app_name}</h3><p>Install the app on your iPhone when it becomes available.</p></article>
+          <article class="step"><span class="step-number">2</span><h3>Set up in seconds</h3><p>Choose what matters to you with a short, focused start.</p></article>
+          <article class="step"><span class="step-number">3</span><h3>Enjoy every day</h3><p>Return to a clear experience that fits naturally into your routine.</p></article>
+        </div>
+      </div>
+    </section>
+    <section class="download" id="download">
+      <div class="shell"><div><p class="eyebrow">Ready when you are</p><h2>For iPhone — iPad coming soon</h2><p>{tagline}</p></div><span class="store-pill">Coming soon to the App Store</span></div>
     </section>
   </main>
-  <footer>
-    <div class="wrap">
-      <span>© {developer_entity} · {support_email}</span>
-      <nav aria-label="Legal"><a href="../legal/terms.md">Terms</a><a href="../legal/privacy.md">Privacy</a></nav>
-    </div>
-  </footer>
+  <footer><div class="shell"><span>© {developer_entity} · <a href="mailto:{support_email}">{support_email}</a></span><nav aria-label="Legal"><a href="./legal/terms.html">Terms</a><a href="./legal/privacy.html">Privacy</a></nav></div></footer>
 </body>
 </html>

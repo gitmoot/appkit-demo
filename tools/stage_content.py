@@ -7,6 +7,7 @@ from pathlib import Path
 
 import frame_compose
 import render
+import screens
 from inputs import InputError, load_inputs
 from stage_support import (
     emit_result,
@@ -23,7 +24,9 @@ def main() -> None:
         values = load_inputs()
         frame_compose.verify_assets()
         prepare_output_tree()
-        outputs = render.render_all(values)
+        framed, devices = screens.build_render_assets(values)
+        device_pngs = screens.encode_device_screens(devices)
+        outputs = render.render_all(values, framed, device_pngs)
         digests = identity_digests(outputs, Path.cwd())
         emit_result("implemented", success_summary(values, digests))
     except InputError as error:

@@ -32,6 +32,9 @@ class VerificationError(RuntimeError):
     pass
 
 
+MAX_OUTPUT_BYTES = 15 * 1024 * 1024
+
+
 def _expected_relpaths(values: dict[str, object]) -> list[str]:
     return sorted(
         screens.expected_screenshot_relpaths(values)
@@ -179,6 +182,14 @@ def _require_exact_tree(expected: set[str]) -> None:
         raise VerificationError("unexpected_output")
 
 
+def _output_size(out: Path) -> int:
+    return sum(
+        path.stat().st_size
+        for path in sorted(out.rglob("*"), key=lambda item: item.as_posix())
+        if path.is_file() and not path.is_symlink()
+    )
+
+
 def main() -> None:
     try:
         values = load_inputs()
@@ -186,8 +197,11 @@ def main() -> None:
         prepare_output_tree()
         summaries = _upstream_summaries(_load_context(), values)
 
-        screenshot_paths = screens.render_screenshots(values)
-        content_paths = render.render_all(values)
+        framed, devices = screens.build_render_assets(values)
+        framed_pngs = screens.encode_framed_screens(framed)
+        device_pngs = screens.encode_device_screens(devices)
+        screenshot_paths = screens.render_screenshots(values, framed_pngs)
+        content_paths = render.render_all(values, framed, device_pngs)
         artifact_paths = sorted(
             screenshot_paths + content_paths, key=lambda path: path.as_posix()
         )
@@ -202,6 +216,9 @@ def main() -> None:
         _require_exact_tree(base_relpaths | {"manifest.json"})
         zip_path = _write_zip(artifact_paths, manifest_path)
         _require_exact_tree(base_relpaths | {"manifest.json", "launch-kit.zip"})
+        artifact_bytes = _output_size(Path.cwd() / "out")
+        if artifact_bytes > MAX_OUTPUT_BYTES:
+            raise VerificationError("artifact_budget")
 
         final_digests = dict(digests)
         final_digests["out/manifest.json"] = sha256_file(manifest_path)
@@ -213,6 +230,7 @@ def main() -> None:
                 values,
                 final_digests,
                 artifact_count=artifact_count,
+                artifact_bytes=artifact_bytes,
                 manifest_sha256=manifest_sha,
             ),
         )

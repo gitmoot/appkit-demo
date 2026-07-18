@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 from functools import lru_cache
 from pathlib import Path
 
@@ -100,6 +101,17 @@ def frame_screenshot(screen: Image.Image) -> Image.Image:
     return Image.alpha_composite(phone, frame)
 
 
+def compose_device(screen: Image.Image) -> Image.Image:
+    """Composite only the device and trim transparent asset padding."""
+
+    verify_assets()
+    with Image.open(FRAME_PATH) as source:
+        frame_bounds = source.convert("RGBA").getbbox()
+    if frame_bounds is None:
+        raise RuntimeError("frame asset has no visible bounds")
+    return frame_screenshot(screen).crop(frame_bounds).convert("RGBA")
+
+
 def _fit_text(
     draw: ImageDraw.ImageDraw,
     text: str,
@@ -151,10 +163,16 @@ def compose(screen: Image.Image, headline: str, brand_color: str) -> Image.Image
 
 
 def save_png(image: Image.Image, output: Path) -> None:
+    output.write_bytes(png_bytes(image))
+
+
+def png_bytes(image: Image.Image) -> bytes:
+    buffer = io.BytesIO()
     image.save(
-        output,
+        buffer,
         format="PNG",
-        optimize=False,
+        optimize=True,
         compress_level=9,
         pnginfo=PngInfo(),
     )
+    return buffer.getvalue()

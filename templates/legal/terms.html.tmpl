@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{page_title} — {app_name}</title>
+  <style>
+    :root { --brand: {brand_color}; --accent: color-mix(in srgb,var(--brand) 40%,white); --night: #07090d; --surface: #0e1219; --ink: #f7f9fc; --muted: #a9b1bf; --line: rgba(255,255,255,.11); }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--ink); background: var(--night); font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height: 1.75; -webkit-font-smoothing: antialiased; }
+    a { color: inherit; text-decoration: none; }
+    .shell { width: min(1100px,calc(100% - 48px)); margin: 0 auto; }
+    header { height: 78px; display: flex; align-items: center; border-bottom: 1px solid var(--line); background: rgba(7,9,13,.92); }
+    header .shell { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+    .wordmark { min-width: 0; display: inline-flex; align-items: center; gap: 12px; font-weight: 800; letter-spacing: -.025em; }
+    .wordmark img { width: 40px; height: 40px; border-radius: 11px; }
+    .wordmark span { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .get-app { padding: 8px 13px; border: 1px solid var(--line); border-radius: 11px; color: var(--muted); font-size: .86rem; font-weight: 700; }
+    main { width: min(70ch,calc(100% - 36px)); margin: 0 auto; padding: 70px 0 104px; }
+    .back { display: inline-block; margin-bottom: 46px; color: var(--accent); font-weight: 760; }
+    .legal h1 { margin: 0 0 14px; overflow-wrap: anywhere; font-size: clamp(2.8rem,8vw,5rem); line-height: .98; letter-spacing: -.055em; }
+    .legal h2 { margin: 48px 0 12px; font-size: 1.28rem; line-height: 1.25; letter-spacing: -.02em; }
+    .legal p { margin: 0 0 18px; color: #c0c7d2; }
+    .legal .effective { margin-bottom: 42px; padding-bottom: 28px; border-bottom: 1px solid var(--line); color: var(--muted); }
+    footer { padding: 32px 0 44px; border-top: 1px solid var(--line); color: var(--muted); font-size: .9rem; }
+    footer .shell { display: flex; justify-content: space-between; gap: 26px; flex-wrap: wrap; }
+    footer nav { display: flex; gap: 22px; }
+    a:hover { color: var(--ink); }
+    @media (max-width:760px) { .shell { width: min(100% - 32px,620px); } header { height: 70px; } main { padding-top: 52px; } .wordmark span { max-width: 150px; } }
+  </style>
+</head>
+<body>
+  <header><div class="shell"><a class="wordmark" href="../index.html"><img src="{icon_data_uri}" alt=""><span>{app_name}</span></a><a class="get-app" href="../index.html#download">Get the app</a></div></header>
+  <main><a class="back" href="../index.html">← {app_name}</a><article class="legal">{legal_content}</article></main>
+  <footer><div class="shell"><span>© {developer_entity} · <a href="mailto:{support_email}">{support_email}</a></span><nav aria-label="Legal"><a href="./terms.html">Terms</a><a href="./privacy.html">Privacy</a></nav></div></footer>
+</body>
+</html>
