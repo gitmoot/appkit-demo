@@ -2,6 +2,8 @@ Extract launch-kit metadata from the target repository. This is extraction, not 
 
 Read the repository made available by the stage's `reads` grant. Write exactly two files and no others:
 
+This is a fresh derivation for the current run. You MUST replace `order.yaml` with values grounded in the CURRENT target repository, even if an `order.yaml` already exists. Never assume pre-existing derived state is valid: the selected target may have changed. Re-derive every included value from current repository files.
+
 1. `__DATA_ROOT__/order.yaml`, a flat YAML mapping. Its first required key is `target: __TARGET_REPO__`. This target value binds the extraction to the selected repository and must be copied exactly. After it, include only grounded values from this exact allowlist. Omit any optional key you cannot support from a file.
    - `app_name` (maximum 60 characters): prefer a store or marketing display name under `docs/store`, `store`, or site content; then a web app `appName`; then a humanized `pubspec.yaml` or package name.
    - `brand_color` (exact lowercase `#rrggbb`): extract from theme tokens or the design system. Quote this YAML value.

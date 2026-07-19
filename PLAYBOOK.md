@@ -11,7 +11,7 @@ gitmoot pipeline add notify-pro.yaml --enable
 gitmoot pipeline run appkit-pro
 ```
 
-The kit persists at `/root/appkit-pro-data/kit/launch-kit.zip`. A successful run freshly replaces that `kit/` tree, so copy out anything you want to retain before running another order.
+The kit persists at `/root/appkit-pro-data/kit/launch-kit.zip`. A successful run freshly replaces that `kit/` tree, so copy out anything you want to retain before running another order. When `target` changes, `pro_make_pipeline.py` clears the prior target's derived state and handoffs before rendering the spec; when the target is unchanged, it preserves them.
 
 `/root/appkit-pro-data` is the default personal side channel. To isolate another run, export `APPKIT_PRO_DATA_DIR=/absolute/private/data-dir` before writing `target`, generating the pipeline, starting the worker, and running it. The generator binds that same directory into the produce-stage write grant and derive prompt, stamps the current pipeline-template digest there, and the deliverable plus Pro notification source move with it to `$APPKIT_PRO_DATA_DIR/kit/launch-kit.zip`. Regenerate the spec whenever the checked-in template changes; capture fails loudly with `stale_spec` otherwise.
 

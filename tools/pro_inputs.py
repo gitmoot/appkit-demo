@@ -184,6 +184,31 @@ def _parse_order_mapping(text: str) -> tuple[dict[str, object], str]:
     return source, order_target
 
 
+def parse_persisted_order_target(text: str) -> str:
+    """Validate a stored order without binding it to the current target file."""
+
+    source, order_target = _parse_order_mapping(text)
+    if (
+        not order_target
+        or len(order_target) > 4096
+        or order_target != order_target.strip()
+        or not Path(order_target).is_absolute()
+        or Path(order_target) == Path("/")
+        or unicodedata.normalize("NFC", order_target) != order_target
+        or any(
+            unicodedata.category(char).startswith("C") for char in order_target
+        )
+    ):
+        raise ProDataError("order target is invalid")
+    try:
+        validate_inputs(source, app_name_default=PRO_APP_NAME_DEFAULT)
+    except InputError as error:
+        raise ProDataError(
+            f"order validation failed:{error.field}:{error.code}"
+        ) from error
+    return order_target
+
+
 def parse_order(text: str) -> dict[str, object]:
     source, order_target = _parse_order_mapping(text)
     if order_target != str(load_target()):

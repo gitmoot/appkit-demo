@@ -94,6 +94,22 @@ EOF
 make_fixture_files "$FULL"
 make_fixture_files "$BARE"
 make_fixture_files "$DECOY"
+cat > "$BARE/pubspec.yaml" <<'EOF'
+name: bare_switch_app
+description: A second fixture for target-switch verification.
+EOF
+cat > "$BARE/README.md" <<'EOF'
+# Bare Switch App
+
+Tagline: Keep the next step beautifully simple.
+
+- Focus on what matters
+- Organize each day
+- Follow progress clearly
+EOF
+cat > "$BARE/docs/store/app-name.txt" <<'EOF'
+Bare Switch App
+EOF
 : > "$BARE/docs/store/screenshots/en/.gitkeep"
 : > "$DECOY/docs/store/screenshots/en/.gitkeep"
 
@@ -667,10 +683,10 @@ run_case() {
   target=$2
   digest_file=$3
   decoy_digests=${4-}
+  expected_app_name=${5-}
   printf '%s\n' "$target" > "$DATA_ROOT/target"
-  rm -f "$DATA_ROOT/order.yaml" "$DATA_ROOT/rationale.md" "$DATA_ROOT/capture-report.json"
-  rm -rf "$DATA_ROOT/screens" "$DATA_ROOT/content-agent"
-  python3 "$REPO/tools/pro_make_pipeline.py" >/dev/null
+  make_stderr=$HOME_ROOT/$expected-pro-make.stderr
+  python3 "$REPO/tools/pro_make_pipeline.py" >/dev/null 2>"$make_stderr"
   verify_generated_dag
   add_pipeline
   run_id=$(gitmoot pipeline run appkit-pro --home "$HOME_ROOT")
@@ -678,14 +694,74 @@ run_case() {
   wait_run "$run_id" "$run_json"
   record_concurrency "$run_json"
   verify_persisted_kit "$run_json" "$expected" "$digest_file" "$decoy_digests"
+  if [ -n "$expected_app_name" ]; then
+    python3 - "$REPO/tools" "$DATA_ROOT" "$target" "$expected_app_name" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+import pro_inputs
+
+data_root = Path(sys.argv[2])
+expected_target = str(Path(sys.argv[3]).resolve(strict=True))
+expected_app_name = sys.argv[4]
+values = pro_inputs.load_order()
+order_target = pro_inputs.parse_persisted_order_target(
+    (data_root / "order.yaml").read_text(encoding="utf-8")
+)
+if order_target != expected_target:
+    raise SystemExit(f"order target mismatch: {order_target} != {expected_target}")
+if values["app_name"] != expected_app_name:
+    raise SystemExit(
+        f"derived app name mismatch: {values['app_name']} != {expected_app_name}"
+    )
+readme = (data_root / "kit" / "README.md").read_text(encoding="utf-8")
+if f"# {expected_app_name} Launch Kit" not in readme:
+    raise SystemExit("persisted kit does not reflect the newly derived app name")
+PY
+  fi
 }
 
 first_digest_file=$HOME_ROOT/exported-persisted.sha256
 second_digest_file=$HOME_ROOT/synthetic-persisted.sha256
 decoy_digest_file=$HOME_ROOT/decoy-persisted.sha256
-run_case exported "$FULL" "$first_digest_file"
-run_case synthetic "$BARE" "$second_digest_file"
-run_case not-exported "$DECOY" "$decoy_digest_file" "$FIXTURE_ROOT/decoy-digests.json"
+run_case exported "$FULL" "$first_digest_file" "" "Fixture App"
+outside_switch_sentinel=$HOME_ROOT/target-switch-outside-data-root
+printf '%s\n' keep > "$outside_switch_sentinel"
+run_case synthetic "$BARE" "$second_digest_file" "" "Bare Switch App"
+[ "$(cat "$outside_switch_sentinel")" = keep ] || fail "target switch changed a path outside the data root"
+switch_log=$HOME_ROOT/synthetic-pro-make.stderr
+grep -F 'pro_make_pipeline: target changed ' "$switch_log" >/dev/null || fail "target switch did not log the changed target"
+for stale_path in order.yaml rationale.md capture-report.json screens framed content-agent kit; do
+  grep -F "pro_make_pipeline: cleared stale $stale_path" "$switch_log" >/dev/null || {
+    cat "$switch_log" >&2
+    fail "target switch did not clear stale $stale_path"
+  }
+done
+same_target_before=$(python3 - "$DATA_ROOT/order.yaml" <<'PY'
+import hashlib, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+print(f"{path.stat().st_mtime_ns}:{hashlib.sha256(path.read_bytes()).hexdigest()}")
+PY
+)
+same_target_stderr=$HOME_ROOT/same-target-pro-make.stderr
+python3 "$REPO/tools/pro_make_pipeline.py" >/dev/null 2>"$same_target_stderr"
+same_target_after=$(python3 - "$DATA_ROOT/order.yaml" <<'PY'
+import hashlib, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+print(f"{path.stat().st_mtime_ns}:{hashlib.sha256(path.read_bytes()).hexdigest()}")
+PY
+)
+[ "$same_target_before" = "$same_target_after" ] || fail "same-target generator run changed order.yaml"
+if grep -F 'pro_make_pipeline: cleared stale ' "$same_target_stderr" >/dev/null; then
+  cat "$same_target_stderr" >&2
+  fail "same-target generator run cleared derived state"
+fi
+run_case not-exported "$DECOY" "$decoy_digest_file" "$FIXTURE_ROOT/decoy-digests.json" "Fixture App"
 
 fallback_context=$HOME_ROOT/fallback-landing-context.json
 fallback_relative_file=$HOME_ROOT/fallback-relative
@@ -861,6 +937,7 @@ live_after=$(snapshot_live_root)
 [ "$live_before" = "$live_after" ] || fail "live $LIVE_DATA_ROOT changed during E2E"
 printf '%s\n' "pro_e2e: live root unchanged $live_after"
 printf '%s\n' "pro_e2e: persisted exported=$first_digest synthetic=$second_digest (overwrite confirmed)"
+printf '%s\n' "pro_e2e: target switch self-healed to $BARE; stale state cleared; same-target order stable $same_target_after"
 printf '%s\n' "pro_e2e: decoy non-exported=$decoy_digest; nested decoy digests absent; boundary log present"
 printf '%s\n' "pro_e2e: truncated agent file $fallback_relative used deterministic fallback=$fallback_digest_one"
 if [ "$PARALLEL_SUPPORTED" = 1 ]; then
