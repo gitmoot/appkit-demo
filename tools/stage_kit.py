@@ -77,6 +77,7 @@ def _upstream_summaries(
     context: dict[str, object],
     values: dict[str, object],
     stage_ids: tuple[str, ...] = ("compose", "content"),
+    summary_extras: dict[str, set[str]] | None = None,
 ) -> dict[str, dict[str, object]]:
     if context.get("schema_version") != 1 or context.get("complete") is not True:
         raise VerificationError("context_incomplete")
@@ -101,13 +102,16 @@ def _upstream_summaries(
             summary = json.loads(str(stage["summary"]))
         except json.JSONDecodeError as error:
             raise VerificationError("summary_invalid") from error
-        if not isinstance(summary, dict) or sorted(summary) != [
+        expected_summary_keys = {
             "digests",
             "input_sha256",
             "pillow",
             "v",
             "zlib",
-        ]:
+        }
+        if summary_extras is not None:
+            expected_summary_keys.update(summary_extras.get(stage_id, set()))
+        if not isinstance(summary, dict) or set(summary) != expected_summary_keys:
             raise VerificationError("summary_invalid")
         digests = summary.get("digests")
         if (
@@ -217,12 +221,18 @@ def run_kit(
     enrich: Callable[[list[Path]], list[Path]] | None = None,
     manifest_warnings: list[str] | None = None,
     summary_extras: dict[str, object] | None = None,
+    render_assets: tuple[dict[int, object], dict[int, bytes]] | None = None,
+    render_options: dict[str, object] | None = None,
+    extra_identity_digests: dict[str, str] | None = None,
+    upstream_summary_extras: dict[str, set[str]] | None = None,
 ) -> dict[str, object]:
     """Regenerate, cross-check, and package a public or personal kit."""
 
     frame_compose.verify_assets()
     prepare_output_tree()
-    summaries = _upstream_summaries(context, values, stage_ids)
+    summaries = _upstream_summaries(
+        context, values, stage_ids, upstream_summary_extras
+    )
 
     if screenshot_builder is None:
         framed, devices = screens.build_render_assets(values)
@@ -231,17 +241,29 @@ def run_kit(
         )
     else:
         screenshot_paths = screenshot_builder(values)
-        framed, devices = screens.build_render_assets(values)
+        if render_assets is None:
+            framed, devices = screens.build_render_assets(values)
+            device_pngs = screens.encode_device_screens(devices)
+        else:
+            framed, device_pngs = render_assets
+    if screenshot_builder is None:
+        device_pngs = screens.encode_device_screens(devices)
     content_paths = render.render_all(
         values,
         framed,
-        screens.encode_device_screens(devices),
+        device_pngs,
+        **({} if render_options is None else render_options),
     )
     upstream_paths = sorted(
         screenshot_paths + content_paths,
         key=lambda path: path.as_posix(),
     )
     upstream_digests = identity_digests(upstream_paths, Path.cwd())
+    if extra_identity_digests is not None:
+        overlap = set(upstream_digests).intersection(extra_identity_digests)
+        if overlap:
+            raise VerificationError("extra_digest_overlap")
+        upstream_digests.update(extra_identity_digests)
     _verify_upstream(
         values,
         upstream_digests,

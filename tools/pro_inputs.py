@@ -195,6 +195,7 @@ def load_capture_report() -> dict[str, object]:
         raise ProDataError("capture report is malformed") from error
     if not isinstance(report, dict):
         raise ProDataError("capture report is malformed")
+    counts = report.get("counts")
     ladder = report.get("ladder")
     source = report.get("source")
     warnings = report.get("warnings")
@@ -209,22 +210,39 @@ def load_capture_report() -> dict[str, object]:
         or any(len(item) > 512 for item in warnings)
         or not isinstance(shots, list)
         or not 1 <= len(shots) <= 3
+        or not isinstance(counts, dict)
+        or sorted(counts) != ["padded", "real"]
+        or type(counts.get("padded")) is not int
+        or type(counts.get("real")) is not int
     ):
         raise ProDataError("capture report is malformed")
     for item in shots:
         if (
             not isinstance(item, dict)
-            or sorted(item) != ["file", "height", "sha256", "width"]
+            or sorted(item) != ["file", "height", "sha256", "source", "width"]
             or not isinstance(item["file"], str)
             or Path(item["file"]).name != item["file"]
             or not isinstance(item["sha256"], str)
             or not _SHA256_RE.fullmatch(item["sha256"])
+            or item["source"] not in ("real", "synthetic")
             or not isinstance(item["width"], int)
             or not isinstance(item["height"], int)
             or item["width"] <= 0
             or item["height"] <= 0
         ):
             raise ProDataError("capture report shot is malformed")
+    if ladder == "synthetic":
+        if (
+            len(shots) != 3
+            or counts != {"padded": 3, "real": 0}
+            or any(item["source"] != "synthetic" for item in shots)
+        ):
+            raise ProDataError("capture report counts are inconsistent")
+    elif (
+        counts != {"padded": 0, "real": len(shots)}
+        or any(item["source"] != "real" for item in shots)
+    ):
+        raise ProDataError("capture report counts are inconsistent")
     for text_value in [source, *warnings]:
         if unicodedata.normalize("NFC", text_value) != text_value:
             raise ProDataError("capture report contains unsafe text")

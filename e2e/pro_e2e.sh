@@ -241,7 +241,7 @@ verify_persisted_kit() {
   digest_file=$3
   decoy_digests=${4-}
   python3 - "$run_json" "$DATA_ROOT" "$expected" "$digest_file" "$decoy_digests" <<'PY'
-import hashlib, json, os, stat, sys, zipfile
+import base64, hashlib, json, os, re, stat, sys, zipfile
 from pathlib import Path
 
 run = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -309,6 +309,78 @@ if expected == "not-exported":
         raise SystemExit("nested-repository decoy was incorrectly exported")
 elif report["ladder"] != expected:
     raise SystemExit(f"ladder={report['ladder']}, expected={expected}")
+expected_count = len(report.get("shots", []))
+if report["ladder"] == "exported" and expected_count != 2:
+    raise SystemExit(f"fixture-full exported {expected_count} screens instead of 2")
+if report["ladder"] == "synthetic" and expected_count != 3:
+    raise SystemExit(f"synthetic capture emitted {expected_count} screens instead of 3")
+expected_counts = (
+    {"padded": 3, "real": 0}
+    if report["ladder"] == "synthetic"
+    else {"padded": 0, "real": expected_count}
+)
+if report.get("counts") != expected_counts or len(report.get("shots", [])) != expected_count:
+    raise SystemExit(f"capture counts mismatch: {report.get('counts')}")
+expected_source = "synthetic" if report["ladder"] == "synthetic" else "real"
+if any(item.get("source") != expected_source for item in report["shots"]):
+    raise SystemExit("capture shot provenance mismatch")
+
+framed_root = data_root / "framed"
+expected_framed = {"manifest.json"} | {
+    f"{kind}_{index}.png"
+    for kind in ("device", "frame")
+    for index in range(1, expected_count + 1)
+}
+actual_framed = {path.name for path in framed_root.iterdir()}
+if actual_framed != expected_framed or any(path.is_symlink() for path in framed_root.iterdir()):
+    raise SystemExit(f"framed handoff mismatch: {sorted(actual_framed ^ expected_framed)}")
+handoff_manifest = json.load((framed_root / "manifest.json").open(encoding="utf-8"))
+handoff_by_path = {item["path"]: item for item in handoff_manifest["artifacts"]}
+if handoff_manifest.get("counts") != expected_counts:
+    raise SystemExit("framed handoff counts mismatch")
+
+manifest_paths = {item["path"] for item in artifact_records}
+expected_devices = {f"landing/assets/device_{index}.png" for index in range(1, expected_count + 1)}
+actual_devices = {path for path in manifest_paths if path.startswith("landing/assets/device_")}
+if actual_devices != expected_devices:
+    raise SystemExit(f"landing devices mismatch: {sorted(actual_devices ^ expected_devices)}")
+expected_shots = {
+    f"screenshots/{locale}/shot_{index}.png"
+    for locale in ("en", "it")
+    for index in range(1, expected_count + 1)
+}
+actual_shots = {path for path in manifest_paths if path.startswith("screenshots/")}
+if actual_shots != expected_shots:
+    raise SystemExit(f"marketing screenshots mismatch: {sorted(actual_shots ^ expected_shots)}")
+for index in range(1, expected_count + 1):
+    device_bytes = (framed_root / f"device_{index}.png").read_bytes()
+    if device_bytes != (kit / f"landing/assets/device_{index}.png").read_bytes():
+        raise SystemExit(f"landing device {index} differs from framed handoff")
+    frame_bytes = (framed_root / f"frame_{index}.png").read_bytes()
+    if frame_bytes != (kit / f"screenshots/en/shot_{index}.png").read_bytes():
+        raise SystemExit(f"marketing frame {index} differs from framed handoff")
+
+landing = (kit / "landing/index.html").read_text(encoding="utf-8")
+if "./assets/device_" in landing:
+    raise SystemExit("Pro landing retained a relative device reference")
+embedded_hashes = [
+    hashlib.sha256(base64.b64decode(value, validate=True)).hexdigest()
+    for value in re.findall(r'src="data:image/png;base64,([A-Za-z0-9+/=]+)"', landing)
+]
+for index in range(1, expected_count + 1):
+    device_sha = hashlib.sha256((framed_root / f"device_{index}.png").read_bytes()).hexdigest()
+    expected_occurrences = 2 if index <= 2 else 1
+    if embedded_hashes.count(device_sha) != expected_occurrences:
+        raise SystemExit(f"landing did not embed device {index} from framed handoff")
+
+compose_summary = json.loads(by_id["compose-real"]["summary"])
+content_summary = json.loads(by_id["content"]["summary"])
+handoff_keys = {f"framed/{name}" for name in expected_framed}
+for key in handoff_keys:
+    if compose_summary["digests"].get(key) != content_summary["digests"].get(key):
+        raise SystemExit(f"compose/content handoff digest mismatch: {key}")
+if compose_summary.get("counts") != expected_counts or content_summary.get("counts") != expected_counts:
+    raise SystemExit("stage summary counts mismatch")
 if decoy_digest_path is not None:
     decoy_digests = set(json.load(decoy_digest_path.open(encoding="utf-8")).values())
     observed_shots = {item["sha256"] for item in report["shots"]}
@@ -335,6 +407,9 @@ with zipfile.ZipFile(zip_path) as archive:
             raise SystemExit(f"zip member differs from persisted file: {name}")
 if kit_report != report:
     raise SystemExit("kit capture report differs from observed report")
+count_line = f"Real screens: {expected_counts['real']}; synthetic padding: {expected_counts['padded']}."
+if count_line not in readme:
+    raise SystemExit("kit README omits honest real/padded counts")
 if report["ladder"] == "exported":
     if manifest.get("warnings") != [] or "Captured from " not in readme:
         raise SystemExit("exported provenance missing")

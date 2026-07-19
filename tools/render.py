@@ -172,19 +172,22 @@ def _icon_relpath(size: int) -> str:
     return "out/icons/icon-1024.png" if size == 1024 else f"out/icons/icon-{size}.png" if size != 32 else "out/icons/favicon-32.png"
 
 
-def expected_content_relpaths(values: dict[str, object]) -> list[str]:
+def expected_content_relpaths(
+    values: dict[str, object], device_count: int = 3
+) -> list[str]:
     paths = [
         "out/README.md",
         "out/landing/index.html",
-        "out/landing/assets/device_1.png",
-        "out/landing/assets/device_2.png",
-        "out/landing/assets/device_3.png",
         "out/landing/legal/privacy.html",
         "out/landing/legal/terms.html",
         "out/landing/og.png",
         "out/legal/privacy.md",
         "out/legal/terms.md",
     ]
+    paths.extend(
+        f"out/landing/assets/device_{index}.png"
+        for index in range(1, device_count + 1)
+    )
     paths.extend(_icon_relpath(size) for size in ICON_SIZES)
     for locale in list(values["locales"]):
         for filename in COPY_FILES:
@@ -299,16 +302,63 @@ def render_landing(
     framed: dict[int, Image.Image],
     icon_pngs: dict[int, bytes],
     device_pngs: dict[int, bytes],
+    embed_devices: bool = False,
 ) -> list[Path]:
+    indices = sorted(device_pngs)
+    if indices != list(range(1, len(indices) + 1)) or sorted(framed) != indices:
+        raise TemplateError("landing device indices are invalid")
+    labels = ("home", "detail", "progress")
+    descriptions = (
+        "Find the right next move without digging through clutter.",
+        "Focused details keep every choice clear and approachable.",
+        "Progress stays visible, useful, and easy to act on.",
+    )
+    escaped_name = escape_html(values["app_name"])
+    escaped_headlines = [
+        escape_html(values[f"headline_{index}"]) for index in indices
+    ]
+    hero_lines = []
+    sources = {
+        index: (
+            _data_uri(device_pngs[index])
+            if embed_devices
+            else f"./assets/device_{index}.png"
+        )
+        for index in indices
+    }
+    if len(indices) >= 2:
+        hero_lines.append(
+            f'<img class="hero-device back" src="{sources[2]}" alt="{escaped_name} detail screen">'
+        )
+    hero_lines.append(
+        f'<img class="hero-device front" src="{sources[1]}" alt="{escaped_name} home screen">'
+    )
+    shot_lines = []
+    for position, index in enumerate(indices):
+        shot_lines.append(
+            f'<figure class="shot-card"><img src="{sources[index]}" alt="{escaped_name} {labels[position]} screen"><figcaption><h3>{escaped_headlines[position]}</h3><p>{descriptions[position]}</p></figcaption></figure>'
+        )
+    shot_rail_attributes = ""
+    if len(indices) == 1:
+        shot_rail_attributes = (
+            ' data-count="1" style="grid-template-columns:minmax(0,360px);justify-content:center"'
+        )
+    elif len(indices) == 2:
+        shot_rail_attributes = (
+            ' data-count="2" style="grid-template-columns:repeat(2,minmax(0,1fr));max-width:740px;margin:0 auto"'
+        )
     replacements = _base_replacements(values)
     replacements.update(
         {
             "favicon_data_uri": _data_uri(icon_pngs[32]),
+            "hero_devices": "\n          ".join(hero_lines),
             "icon_data_uri": _data_uri(icon_pngs[64]),
+            "shot_cards": "\n          ".join(shot_lines),
+            "shot_rail_attributes": shot_rail_attributes,
         }
     )
     outputs: list[Path] = []
-    for index in (1, 2, 3):
+    for index in indices:
         output = safe_output_path(f"out/landing/assets/device_{index}.png")
         output.write_bytes(device_pngs[index])
         outputs.append(output)
@@ -319,6 +369,9 @@ def render_landing(
                 _read_template(TEMPLATES / "landing" / "index.html.tmpl"),
                 replacements,
                 html_target=True,
+                safe_html_tokens=frozenset(
+                    ("hero_devices", "shot_cards", "shot_rail_attributes")
+                ),
             ),
         )
     )
@@ -393,7 +446,9 @@ def render_legal(values: dict[str, object]) -> list[Path]:
 
 
 def _kit_readme(
-    values: dict[str, object], provenance: str | None = None
+    values: dict[str, object],
+    provenance: str | None = None,
+    screenshot_count: int = 3,
 ) -> str:
     app_name = str(values["app_name"]).replace("\\", "\\\\").replace("|", "\\|")
     rows: list[tuple[str, str, str]] = []
@@ -409,7 +464,7 @@ def _kit_readme(
         for filename in COPY_FILES:
             what, where = copy_destinations[filename]
             rows.append((f"copy/{locale}/{filename}.txt", what, where))
-        for index in (1, 2, 3):
+        for index in range(1, screenshot_count + 1):
             rows.append(
                 (
                     f"screenshots/{locale}/shot_{index}.png",
@@ -419,13 +474,23 @@ def _kit_readme(
             )
     for size in (1024, 180, 167, 152, 120):
         rows.append((f"icons/icon-{size}.png", f"{size}px app icon", "Your app project and store listing"))
+    device_descriptions = (
+        "Transparent home device render",
+        "Transparent detail device render",
+        "Transparent progress device render",
+    )
+    rows.extend(
+        (
+            f"landing/assets/device_{index}.png",
+            device_descriptions[index - 1],
+            "Displayed by landing/index.html",
+        )
+        for index in range(1, screenshot_count + 1)
+    )
     rows.extend(
         (
             ("icons/favicon-32.png", "Browser favicon", "Your website favicon"),
             ("landing/index.html", "Single-file product page", "Host at your marketing URL"),
-            ("landing/assets/device_1.png", "Transparent home device render", "Displayed by landing/index.html"),
-            ("landing/assets/device_2.png", "Transparent detail device render", "Displayed by landing/index.html"),
-            ("landing/assets/device_3.png", "Transparent progress device render", "Displayed by landing/index.html"),
             ("landing/og.png", "Social sharing image", "Host beside landing/index.html"),
             ("landing/legal/privacy.html", "Hosted privacy page", "Host and paste its URL into Privacy Policy URL"),
             ("landing/legal/terms.html", "Hosted terms page", "Host beside the privacy page"),
@@ -485,22 +550,36 @@ def _kit_readme(
 
 
 def render_readme(
-    values: dict[str, object], provenance: str | None = None
+    values: dict[str, object],
+    provenance: str | None = None,
+    screenshot_count: int = 3,
 ) -> Path:
-    return _write_text("out/README.md", _kit_readme(values, provenance))
+    return _write_text(
+        "out/README.md", _kit_readme(values, provenance, screenshot_count)
+    )
 
 
 def render_all(
     values: dict[str, object],
     framed: dict[int, Image.Image],
     device_pngs: dict[int, bytes],
+    provenance: str | None = None,
+    embed_devices: bool = False,
 ) -> list[Path]:
     outputs = render_copy(values)
     icon_paths, icon_pngs = render_icons(values)
     outputs.extend(icon_paths)
     outputs.extend(
-        render_landing(values, framed, icon_pngs, device_pngs)
+        render_landing(
+            values,
+            framed,
+            icon_pngs,
+            device_pngs,
+            embed_devices=embed_devices,
+        )
     )
     outputs.extend(render_legal(values))
-    outputs.append(render_readme(values))
+    outputs.append(
+        render_readme(values, provenance, screenshot_count=len(framed))
+    )
     return sorted(outputs, key=lambda path: path.as_posix())

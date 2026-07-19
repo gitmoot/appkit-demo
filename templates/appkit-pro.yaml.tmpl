@@ -22,7 +22,7 @@ __DERIVE_PROMPT__
     timeout: 8m
   - id: content
     cmd: python3 tools/pro_stage_content.py
-    needs: [derive]
+    needs: [derive, compose-real]
     timeout: 8m
   - id: kit
     cmd: python3 tools/pro_stage_kit.py

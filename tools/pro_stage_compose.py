@@ -5,9 +5,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import frame_compose
 import pro_compose
+import pro_handoff
 import pro_inputs
-import screens
 from stage_support import (
     emit_result,
     failure_summary,
@@ -21,11 +22,23 @@ from stage_support import (
 def run_compose_real(values: dict[str, object]) -> dict[str, object]:
     report = pro_inputs.load_capture_report()
     prepare_output_tree()
-    framed = pro_compose.build_framed(values, report)
-    outputs = screens.render_screenshots(
-        values, screens.encode_framed_screens(framed)
+    framed, devices = pro_compose.build_render_assets(values, report)
+    framed_pngs = {
+        index: frame_compose.png_bytes(framed[index])
+        for index in sorted(framed)
+    }
+    outputs = pro_compose.render_screenshots(values, framed_pngs)
+    handoff_digests, persisted = pro_handoff.persist_assets(
+        values, report, framed, devices
     )
-    return success_summary(values, identity_digests(outputs, Path.cwd()))
+    digests = identity_digests(outputs, Path.cwd())
+    digests.update(handoff_digests)
+    return success_summary(
+        values,
+        digests,
+        counts=report["counts"],
+        persisted=persisted,
+    )
 
 
 def main() -> None:

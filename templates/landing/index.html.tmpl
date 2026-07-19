@@ -125,18 +125,15 @@
           <span class="store-pill">Coming soon to the App Store</span>
         </div>
         <div class="hero-stage" aria-label="{app_name} app previews">
-          <img class="hero-device back" src="./assets/device_2.png" alt="{app_name} detail screen">
-          <img class="hero-device front" src="./assets/device_1.png" alt="{app_name} home screen">
+          {hero_devices}
         </div>
       </div>
     </section>
     <section class="shots section-block" id="screens">
       <div class="shell">
         <div class="section-heading"><p class="eyebrow">See it in action</p><h2>Made to feel familiar from the first tap.</h2></div>
-        <div class="shot-rail">
-          <figure class="shot-card"><img src="./assets/device_1.png" alt="{app_name} home screen"><figcaption><h3>{headline_1}</h3><p>Find the right next move without digging through clutter.</p></figcaption></figure>
-          <figure class="shot-card"><img src="./assets/device_2.png" alt="{app_name} detail screen"><figcaption><h3>{headline_2}</h3><p>Focused details keep every choice clear and approachable.</p></figcaption></figure>
-          <figure class="shot-card"><img src="./assets/device_3.png" alt="{app_name} progress screen"><figcaption><h3>{headline_3}</h3><p>Progress stays visible, useful, and easy to act on.</p></figcaption></figure>
+        <div class="shot-rail"{shot_rail_attributes}>
+          {shot_cards}
         </div>
       </div>
     </section>

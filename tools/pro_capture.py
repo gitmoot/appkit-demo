@@ -7,6 +7,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import shutil
 import socket
 import stat
@@ -39,8 +40,26 @@ EXPORT_JUNK_DIRECTORIES = frozenset(
 
 NODE_CAPTURE_SCRIPT = r"""
 const { chromium } = require(process.argv[1]);
+const fs = require('fs');
 const base = process.argv[2];
 const output = process.argv[3];
+let serial = 0;
+
+function byteClose(first, second) {
+  if (!first || !second) return false;
+  const longest = Math.max(first.length, second.length);
+  if (Math.abs(first.length - second.length) > longest * 0.02) return false;
+  const length = Math.min(first.length, second.length);
+  const step = Math.max(1, Math.floor(length / 4096));
+  let compared = 0;
+  let different = 0;
+  for (let index = 0; index < length; index += step) {
+    compared++;
+    if (first[index] !== second[index]) different++;
+  }
+  return different / compared <= 0.01;
+}
+
 (async () => {
   const browser = await chromium.launch({headless: true, executablePath: process.argv[4]});
   try {
@@ -52,7 +71,30 @@ const output = process.argv[3];
     });
     const page = await context.newPage();
     await page.goto(base, {waitUntil: 'domcontentloaded', timeout: 30000});
-    await page.waitForTimeout(1000);
+    const result = [];
+
+    async function collectStable(label, windowMs) {
+      const end = Date.now() + windowMs;
+      let previous = null;
+      let lastStable = null;
+      while (Date.now() < end) {
+        const current = await page.screenshot({fullPage: false, type: 'png'});
+        if (byteClose(previous, current) && !byteClose(lastStable, current)) {
+          serial++;
+          const file = `${output}/raw_${serial}.png`;
+          fs.writeFileSync(file, current);
+          result.push({file, phase: label, url: page.url()});
+          lastStable = current;
+          process.stderr.write(`capture interaction: stable ${label}\n`);
+        }
+        previous = current;
+        await page.waitForTimeout(500);
+      }
+    }
+
+    process.stderr.write('capture interaction: splash-settle begin\n');
+    await collectStable('settle', 20000);
+
     const discovered = await page.evaluate(() => {
       const current = new URL(location.href);
       const values = [];
@@ -62,20 +104,58 @@ const output = process.argv[3];
       }
       return Array.from(new Set(values)).sort();
     });
-    const routes = ['/'];
-    for (const route of discovered) {
-      if (route !== '/' && routes.length < 3) routes.push(route);
-    }
-    const result = [];
-    for (let index = 0; index < routes.length; index++) {
-      const url = new URL(routes[index], base).href;
-      if (index !== 0) {
-        await page.goto(url, {waitUntil: 'domcontentloaded', timeout: 30000});
-        await page.waitForTimeout(1000);
+
+    const tabs = page.locator('[role="tab"]');
+    const tabCount = Math.min(await tabs.count(), 2);
+    for (let index = 0; index < tabCount; index++) {
+      process.stderr.write(`capture interaction: dom-tab ${index + 1}\n`);
+      try {
+        await tabs.nth(index).click({timeout: 3000});
+        await collectStable(`tab-${index + 1}`, 5000);
+      } catch (_) {
+        process.stderr.write(`capture interaction: dom-tab ${index + 1} failed\n`);
       }
-      const file = `${output}/raw_${index + 1}.png`;
-      await page.screenshot({path: file, fullPage: false, type: 'png'});
-      result.push({file, url});
+      await page.keyboard.press('Escape');
+      await page.goto(base, {waitUntil: 'domcontentloaded', timeout: 30000});
+    }
+
+    const routes = discovered.filter(route => route !== '/').slice(0, 2);
+    for (let index = 0; index < routes.length; index++) {
+      process.stderr.write(`capture interaction: dom-link ${index + 1}\n`);
+      const route = routes[index];
+      try {
+        await page.evaluate((wanted) => {
+          const current = new URL(location.href);
+          const nodes = Array.from(document.querySelectorAll('a[href]'));
+          nodes.sort((a, b) => new URL(a.getAttribute('href'), current).href.localeCompare(new URL(b.getAttribute('href'), current).href));
+          const match = nodes.find(node => {
+            const url = new URL(node.getAttribute('href'), current);
+            return url.origin === current.origin && url.pathname + url.search === wanted;
+          });
+          if (!match) throw new Error('internal link disappeared');
+          match.click();
+        }, route);
+        await page.waitForTimeout(500);
+        await collectStable(`link-${index + 1}`, 5000);
+      } catch (_) {
+        process.stderr.write(`capture interaction: dom-link ${index + 1} failed\n`);
+      }
+      await page.keyboard.press('Escape');
+      await page.goto(base, {waitUntil: 'domcontentloaded', timeout: 30000});
+    }
+
+    if (discovered.length === 0 && tabCount === 0) {
+      const taps = [[195,295],[78,802],[195,802],[312,802]];
+      for (let index = 0; index < taps.length; index++) {
+        process.stderr.write(`capture interaction: canvas-tap ${index + 1}\n`);
+        await page.mouse.click(taps[index][0], taps[index][1]);
+        await collectStable(`canvas-${index + 1}`, 5000);
+        process.stderr.write(`capture interaction: canvas-back ${index + 1}\n`);
+        await page.keyboard.press('Escape');
+        if (page.url() !== base) {
+          await page.goBack({waitUntil: 'domcontentloaded', timeout: 3000}).catch(() => null);
+        }
+      }
     }
     process.stdout.write(JSON.stringify(result));
   } finally {
@@ -153,6 +233,71 @@ def _save_normalized(source: Path, destination: Path) -> None:
             raise ValueError("image too large")
         normalized = _normalize(image)
     destination.write_bytes(frame_compose.png_bytes(normalized))
+
+
+def _visual_signature(path: Path) -> bytes | None:
+    with Image.open(path) as image:
+        prepared = ImageOps.exif_transpose(image).convert("RGBA")
+        if prepared.width * prepared.height > MAX_EXPORT_PIXELS:
+            raise ValueError("image too large")
+        sample = prepared.resize((16, 16), Image.Resampling.LANCZOS)
+    extrema = sample.getextrema()
+    if extrema[3][1] == 0:
+        return None
+    color_spread = max(high for low, high in extrema[:3]) - min(
+        low for low, high in extrema[:3]
+    )
+    if color_spread < 12:
+        return None
+    return sample.tobytes()
+
+
+def _signature_distance(first: bytes, second: bytes) -> float:
+    if len(first) != len(second) or not first:
+        return 1.0
+    return sum(abs(left - right) for left, right in zip(first, second)) / (
+        len(first) * 255
+    )
+
+
+def _select_web_records(records: list[dict[str, object]], temporary: Path) -> list[Path]:
+    prepared: list[tuple[Path, str, bytes]] = []
+    for record in records:
+        if (
+            not isinstance(record, dict)
+            or sorted(record) != ["file", "phase", "url"]
+            or not isinstance(record.get("file"), str)
+            or not isinstance(record.get("phase"), str)
+            or not isinstance(record.get("url"), str)
+            or not re.fullmatch(r"(?:settle|(?:tab|link|canvas)-[1-4])", str(record["phase"]))
+        ):
+            raise RuntimeError("browser capture output malformed")
+        raw = Path(str(record["file"]))
+        if raw.parent != temporary or not raw.is_file() or raw.is_symlink():
+            raise RuntimeError("browser capture file unsafe")
+        signature = _visual_signature(raw)
+        if signature is None:
+            log("capture interaction: rejected blank or uniform frame")
+            continue
+        prepared.append((raw, str(record["phase"]), signature))
+
+    settled = [item for item in prepared if item[1] == "settle"]
+    ordered = ([settled[-1]] if settled else []) + [
+        item for item in prepared if item[1] != "settle"
+    ]
+    selected: list[tuple[Path, bytes]] = []
+    for raw, phase, signature in ordered:
+        if any(
+            _signature_distance(signature, existing) < 0.025
+            for _, existing in selected
+        ):
+            log(f"capture interaction: rejected duplicate {phase}")
+            continue
+        selected.append((raw, signature))
+        log(f"capture interaction: accepted distinct {phase}")
+        if len(selected) == 3:
+            break
+    return [path for path, _ in selected]
 
 
 def _export_location_rank(relative: Path) -> int | None:
@@ -459,18 +604,19 @@ def _capture_web_root(
                 text=True,
                 timeout=_remaining(deadline, 180),
             )
+            for line in result.stderr.splitlines()[:128]:
+                if line.startswith("capture interaction:"):
+                    log(line[:512])
             if len(result.stdout) > 64 * 1024:
                 raise RuntimeError("browser capture output too large")
             records = json.loads(result.stdout)
-            if not isinstance(records, list) or not 1 <= len(records) <= 3:
+            if not isinstance(records, list) or not 1 <= len(records) <= 32:
                 raise RuntimeError("browser capture returned no shots")
+            selected = _select_web_records(records, Path(temporary))
+            if not selected:
+                raise RuntimeError("browser capture returned no useful stable shots")
             outputs: list[Path] = []
-            for index, record in enumerate(records, start=1):
-                if not isinstance(record, dict) or not isinstance(record.get("file"), str) or not isinstance(record.get("url"), str):
-                    raise RuntimeError("browser capture output malformed")
-                raw = Path(record["file"])
-                if raw.parent != Path(temporary) or not raw.is_file() or raw.is_symlink():
-                    raise RuntimeError("browser capture file unsafe")
+            for index, raw in enumerate(selected, start=1):
                 output = destination / f"shot_{index}.png"
                 _save_normalized(raw, output)
                 outputs.append(output)
@@ -551,6 +697,7 @@ def _report(
     shots: list[Path],
     target: Path,
 ) -> dict[str, object]:
+    synthetic = ladder == "synthetic"
     records: list[dict[str, object]] = []
     for shot in shots:
         with Image.open(shot) as image:
@@ -560,10 +707,15 @@ def _report(
                 "file": shot.name,
                 "height": height,
                 "sha256": _sha256(shot),
+                "source": "synthetic" if synthetic else "real",
                 "width": width,
             }
         )
     report = {
+        "counts": {
+            "padded": len(records) if synthetic else 0,
+            "real": 0 if synthetic else len(records),
+        },
         "ladder": ladder,
         "shots": records,
         "source": _sanitize_source(source, target),
@@ -601,7 +753,15 @@ def main() -> None:
             str(item["file"]): str(item["sha256"])
             for item in report["shots"]
         }
-        emit_result("implemented", {"digests": digests, "ladder": ladder, "v": 1})
+        emit_result(
+            "implemented",
+            {
+                "counts": report["counts"],
+                "digests": digests,
+                "ladder": ladder,
+                "v": 1,
+            },
+        )
     except Exception as error:
         log(f"capture failed: {type(error).__name__}")
         emit_result("failed", failure_summary("capture_error"))

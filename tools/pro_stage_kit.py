@@ -8,10 +8,11 @@ import shutil
 import stat
 from pathlib import Path
 
+import frame_compose
 import pro_compose
+import pro_handoff
 import pro_inputs
 import render
-import screens
 import stage_kit
 from stage_support import (
     canonical_json,
@@ -156,30 +157,26 @@ def main() -> None:
         report = pro_inputs.load_capture_report()
         prepare_output_tree()
         context = stage_kit._load_context()
+        framed, device_pngs, handoff_digests = pro_handoff.load_assets(
+            values, report
+        )
+        framed_pngs = {
+            index: frame_compose.png_bytes(framed[index])
+            for index in sorted(framed)
+        }
+        count = len(framed)
 
         def screenshot_builder(current: dict[str, object]) -> list[Path]:
-            real_framed = pro_compose.build_framed(current, report)
-            return screens.render_screenshots(
-                current, screens.encode_framed_screens(real_framed)
-            )
+            return pro_compose.render_screenshots(current, framed_pngs)
 
         def enrich(upstream_paths: list[Path]) -> list[Path]:
-            old_readme = next(
-                path for path in upstream_paths if path.as_posix().endswith("/out/README.md")
-            )
-            readme_path = render.render_readme(
-                values, pro_compose.provenance(report)
-            )
             report_path = safe_output_path("out/capture-report.json")
             report_path.write_text(
                 canonical_json(report) + "\n",
                 encoding="utf-8",
                 newline="\n",
             )
-            return [path for path in upstream_paths if path != old_readme] + [
-                readme_path,
-                report_path,
-            ]
+            return upstream_paths + [report_path]
 
         summary = stage_kit.run_kit(
             values,
@@ -187,8 +184,12 @@ def main() -> None:
             stage_ids=("compose-real", "content"),
             screenshot_builder=screenshot_builder,
             expected_groups={
-                "compose-real": screens.expected_screenshot_relpaths(values),
-                "content": render.expected_content_relpaths(values),
+                "compose-real": pro_compose.expected_screenshot_relpaths(
+                    values, count
+                )
+                + pro_handoff.expected_digest_keys(count),
+                "content": render.expected_content_relpaths(values, count)
+                + pro_handoff.expected_digest_keys(count),
             },
             enrich=enrich,
             manifest_warnings=(
@@ -196,7 +197,20 @@ def main() -> None:
                 if report["ladder"] == "synthetic"
                 else []
             ),
-            summary_extras={"ladder": report["ladder"]},
+            summary_extras={
+                "counts": report["counts"],
+                "ladder": report["ladder"],
+            },
+            render_assets=(framed, device_pngs),
+            render_options={
+                "embed_devices": True,
+                "provenance": pro_compose.provenance(report),
+            },
+            extra_identity_digests=handoff_digests,
+            upstream_summary_extras={
+                "compose-real": {"counts", "persisted"},
+                "content": {"counts"},
+            },
         )
         zip_digest = summary["digests"]["out/launch-kit.zip"]
         if not isinstance(zip_digest, str):

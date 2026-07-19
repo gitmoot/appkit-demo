@@ -10,6 +10,7 @@ from PIL import Image
 import frame_compose
 import pro_inputs
 import screens
+from stage_support import safe_output_path
 
 
 def _sha256(path: Path) -> str:
@@ -43,32 +44,69 @@ def _captured_images(report: dict[str, object]) -> list[Image.Image]:
     return result
 
 
+def build_render_assets(
+    values: dict[str, object], report: dict[str, object]
+) -> tuple[dict[int, Image.Image], dict[int, Image.Image]]:
+    frame_compose.verify_assets()
+    if report["ladder"] == "synthetic":
+        return screens.build_render_assets(values)
+    captures = _captured_images(report)
+    framed = {
+        index: frame_compose.compose(
+            captures[index - 1],
+            str(values[f"headline_{index}"]),
+            str(values["brand_color"]),
+        )
+        for index in range(1, len(captures) + 1)
+    }
+    devices = {
+        index: frame_compose.compose_device(captures[index - 1])
+        for index in range(1, len(captures) + 1)
+    }
+    return framed, devices
+
+
 def build_framed(
     values: dict[str, object], report: dict[str, object]
 ) -> dict[int, Image.Image]:
-    frame_compose.verify_assets()
-    if report["ladder"] == "synthetic":
-        return screens.build_framed_screens(values)
-    captures = _captured_images(report)
-    headlines = {
-        1: str(values["headline_1"]),
-        2: str(values["headline_2"]),
-        3: str(values["headline_3"]),
-    }
-    return {
-        index: frame_compose.compose(
-            captures[min(index - 1, len(captures) - 1)],
-            headlines[index],
-            str(values["brand_color"]),
-        )
-        for index in (1, 2, 3)
-    }
+    return build_render_assets(values, report)[0]
+
+
+def expected_screenshot_relpaths(
+    values: dict[str, object], count: int
+) -> list[str]:
+    return sorted(
+        f"out/screenshots/{locale}/shot_{index}.png"
+        for locale in list(values["locales"])
+        for index in range(1, count + 1)
+    )
+
+
+def render_screenshots(
+    values: dict[str, object], framed_pngs: dict[int, bytes]
+) -> list[Path]:
+    outputs: list[Path] = []
+    for locale in list(values["locales"]):
+        for index in sorted(framed_pngs):
+            output = safe_output_path(
+                f"out/screenshots/{locale}/shot_{index}.png"
+            )
+            output.write_bytes(framed_pngs[index])
+            outputs.append(output)
+    return sorted(outputs, key=lambda path: path.as_posix())
 
 
 def provenance(report: dict[str, object]) -> str:
+    counts = report["counts"]
     if report["ladder"] == "synthetic":
-        return "Synthesized deterministically from derived brand inputs."
+        return (
+            "Synthesized deterministically from derived brand inputs. "
+            f"Real screens: {counts['real']}; synthetic padding: {counts['padded']}."
+        )
     source = str(report["source"])
     for token in ("\\", "`", "*", "_", "{", "}", "[", "]", "<", ">", "|", "#"):
         source = source.replace(token, "\\" + token)
-    return f"Captured from {source} via {report['ladder']}."
+    return (
+        f"Captured from {source} via {report['ladder']}. "
+        f"Real screens: {counts['real']}; synthetic padding: {counts['padded']}."
+    )
