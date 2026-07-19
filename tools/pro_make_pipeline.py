@@ -15,6 +15,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 TEMPLATE = ROOT / "templates" / "appkit-pro.yaml.tmpl"
 PROMPT = ROOT / "templates" / "derive-prompt.md"
+CONTENT_PROMPT = ROOT / "templates" / "content-prompt.md"
 OUTPUT = ROOT / "appkit-pro.yaml"
 
 
@@ -30,21 +31,29 @@ def main() -> None:
     template = _read(TEMPLATE)
     template_sha256 = hashlib.sha256(TEMPLATE.read_bytes()).hexdigest()
     prompt = _read(PROMPT).rstrip("\n")
+    content_prompt = _read(CONTENT_PROMPT).rstrip("\n")
     if (
-        template.count("__DATA_ROOT__") != 1
+        template.count("__DATA_ROOT__") != 2
         or template.count("__TARGET_REPO__") != 1
         or template.count("__DERIVE_PROMPT__") != 1
+        or template.count("__CONTENT_PROMPT__") != 1
         or template.count("__SPEC_SHA256__") != 1
         or prompt.count("__DATA_ROOT__") != 2
         or prompt.count("__TARGET_REPO__") != 1
+        or content_prompt.count("__DATA_ROOT__") != 1
     ):
         raise RuntimeError("pipeline template markers are invalid")
     prompt = prompt.replace("__DATA_ROOT__", str(data_root))
     prompt = prompt.replace("__TARGET_REPO__", json.dumps(str(target)))
     prompt_block = "\n".join("      " + line for line in prompt.splitlines())
+    content_prompt = content_prompt.replace("__DATA_ROOT__", str(data_root))
+    content_prompt_block = "\n".join(
+        "      " + line for line in content_prompt.splitlines()
+    )
     rendered = template.replace("__TARGET_REPO__", json.dumps(str(target)))
     rendered = rendered.replace("__DATA_ROOT__", json.dumps(str(data_root)))
     rendered = rendered.replace("__DERIVE_PROMPT__", prompt_block)
+    rendered = rendered.replace("__CONTENT_PROMPT__", content_prompt_block)
     rendered = rendered.replace("__SPEC_SHA256__", template_sha256)
     temporary = OUTPUT.with_name(OUTPUT.name + ".tmp")
     if OUTPUT.is_symlink() or temporary.is_symlink():

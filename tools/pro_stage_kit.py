@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 from pathlib import Path
 
+import pro_agent_content
 import pro_assemble
-import pro_content_handoff
 import pro_handoff
 import pro_inputs
 import render
@@ -158,45 +159,73 @@ def main() -> None:
         framed, device_pngs, framed_digests = pro_handoff.load_assets(
             values, report
         )
-        content_payloads, content_digests = pro_content_handoff.load_assets(values)
         count = len(framed)
-        handoff_digests = dict(framed_digests)
-        if set(handoff_digests).intersection(content_digests):
-            raise stage_kit.VerificationError("kit_digest_overlap")
-        handoff_digests.update(content_digests)
+        content = pro_agent_content.inspect(values)
+        for relative in sorted(content.reasons):
+            log(f"content fallback: {relative}/{content.reasons[relative]}")
+        parsed = stage_kit._upstream_summaries(
+            context,
+            values,
+            ("landing",),
+            {"landing": {"content_provenance", "counts", "observed"}},
+        )["landing"]
+        if (
+            parsed.get("counts") != report["counts"]
+            or parsed.get("content_provenance") != content.provenance
+        ):
+            raise stage_kit.VerificationError("landing_provenance_mismatch")
+        observed = parsed.get("observed")
+        expected_observed = pro_assemble.expected_observed_keys(content.provenance)
+        if (
+            not isinstance(observed, dict)
+            or sorted(observed) != expected_observed
+            or any(
+                not isinstance(value, str)
+                or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                for value in observed.values()
+            )
+        ):
+            raise stage_kit.VerificationError("landing_observed_mismatch")
+
+        summary_extras: dict[str, object] = {
+            "content_provenance": content.provenance,
+            "counts": report["counts"],
+            "ladder": report["ladder"],
+        }
 
         def artifact_builder(current: dict[str, object]) -> list[Path]:
-            return pro_assemble.assemble(
+            assembly = pro_assemble.assemble(
                 current,
                 report,
                 framed,
                 device_pngs,
-                content_payloads,
                 framed_digests,
-                content_digests,
+                content,
             )
+            summary_extras["observed"] = assembly.observed
+            return assembly.paths
 
         summary = stage_kit.run_kit(
             values,
             context,
             stage_ids=("landing",),
             expected_groups={
-                "landing": pro_assemble.expected_digest_keys(values, count),
+                "landing": pro_assemble.expected_digest_keys(
+                    values, count, content.provenance
+                ),
             },
             manifest_warnings=(
                 list(report["warnings"])
                 if report["ladder"] == "synthetic"
                 else []
             ),
-            summary_extras={
-                "counts": report["counts"],
-                "ladder": report["ladder"],
-            },
-            extra_identity_digests=handoff_digests,
+            summary_extras=summary_extras,
+            extra_identity_digests=framed_digests,
             upstream_summary_extras={
-                "landing": {"counts"},
+                "landing": {"content_provenance", "counts", "observed"},
             },
             artifact_builder=artifact_builder,
+            manifest_metadata={"content_provenance": content.provenance},
         )
         zip_digest = summary["digests"]["out/launch-kit.zip"]
         if not isinstance(zip_digest, str):

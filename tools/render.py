@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import re
 from pathlib import Path
 from urllib.parse import quote
@@ -340,6 +341,7 @@ def render_landing(
     icon_pngs: dict[int, bytes],
     device_pngs: dict[int, bytes],
     embed_devices: bool = False,
+    legal_markdown: dict[str, str] | None = None,
 ) -> list[Path]:
     indices = sorted(device_pngs)
     if indices != list(range(1, len(indices) + 1)) or sorted(framed) != indices:
@@ -415,16 +417,20 @@ def render_landing(
     og_path, _ = _write_png("out/landing/og.png", _og_image(values, framed))
     outputs.append(og_path)
     for name in ("privacy", "terms"):
-        markdown_template = _read_template(
-            TEMPLATES / "legal" / f"{name}.md.tmpl"
-        )
+        if legal_markdown is None:
+            legal_content = _markdown_to_html(
+                _read_template(TEMPLATES / "legal" / f"{name}.md.tmpl"),
+                replacements,
+            )
+        else:
+            if sorted(legal_markdown) != ["privacy", "terms"]:
+                raise TemplateError("landing legal set is invalid")
+            legal_content = _literal_markdown_to_html(legal_markdown[name])
         legal_replacements = dict(replacements)
         legal_replacements.update(
             {
                 "icon_data_uri": _data_uri(icon_pngs[64]),
-                "legal_content": _markdown_to_html(
-                    markdown_template, replacements
-                ),
+                "legal_content": legal_content,
                 "page_title": "Privacy Policy" if name == "privacy" else "Terms of Service",
             }
         )
@@ -465,6 +471,28 @@ def _markdown_to_html(
     return "".join(rendered)
 
 
+def _literal_markdown_to_html(markdown: str) -> str:
+    """Render bounded observed Markdown while escaping every content byte."""
+
+    rendered: list[str] = []
+    for raw_line in markdown.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("## "):
+            tag, content = "h2", line[3:]
+        elif line.startswith("# "):
+            tag, content = "h1", line[2:]
+        elif line.startswith("**") and line.endswith("**") and len(line) > 4:
+            tag, content = 'p class="effective"', line[2:-2]
+        else:
+            tag, content = "p", line
+        rendered.append(
+            f"<{tag}>{html.escape(content, quote=True)}</{tag.split()[0]}>"
+        )
+    return "".join(rendered)
+
+
 def render_legal(values: dict[str, object]) -> list[Path]:
     replacements = _base_replacements(values)
     outputs: list[Path] = []
@@ -486,6 +514,7 @@ def _kit_readme(
     values: dict[str, object],
     provenance: str | None = None,
     screenshot_count: int = 3,
+    content_provenance: dict[str, str] | None = None,
 ) -> str:
     app_name = str(values["app_name"]).replace("\\", "\\\\").replace("|", "\\|")
     rows: list[tuple[str, str, str]] = []
@@ -554,6 +583,18 @@ def _kit_readme(
     ]
     if provenance is not None:
         lines.extend((f"**Provenance:** {provenance}", ""))
+    if content_provenance is not None:
+        lines.extend(
+            (
+                "## Content provenance",
+                "",
+                "| File | Source |",
+                "| --- | --- |",
+            )
+        )
+        for path in sorted(content_provenance):
+            lines.append(f"| `{path}` | {content_provenance[path]} |")
+        lines.append("")
     lines.extend(
         (
             "| File | What it is | Where it goes |",
@@ -590,9 +631,16 @@ def render_readme(
     values: dict[str, object],
     provenance: str | None = None,
     screenshot_count: int = 3,
+    content_provenance: dict[str, str] | None = None,
 ) -> Path:
     return _write_text(
-        "out/README.md", _kit_readme(values, provenance, screenshot_count)
+        "out/README.md",
+        _kit_readme(
+            values,
+            provenance,
+            screenshot_count,
+            content_provenance,
+        ),
     )
 
 
@@ -647,16 +695,6 @@ def render_content_core(values: dict[str, object]) -> list[Path]:
     outputs.extend(icon_paths)
     outputs.extend(render_legal(values))
     outputs.append(render_content_readme(values))
-    return sorted(outputs, key=lambda path: path.as_posix())
-
-
-def render_content_handoff(values: dict[str, object]) -> list[Path]:
-    """Render only artifacts that the Pro landing join copies verbatim."""
-
-    outputs = render_copy(values)
-    icon_paths, _ = render_icons(values)
-    outputs.extend(icon_paths)
-    outputs.extend(render_legal(values))
     return sorted(outputs, key=lambda path: path.as_posix())
 
 

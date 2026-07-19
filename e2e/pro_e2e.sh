@@ -182,6 +182,7 @@ gitmoot agent start appkit-deriver \
   --role implementer \
   --capability produce \
   --model gpt-5.6-sol \
+  --effort low \
   --policy workspace-write >/dev/null
 PARALLEL_SUPPORTED=0
 if gitmoot daemon start --help 2>&1 | grep -q -- '-workers'; then
@@ -241,6 +242,23 @@ expected = {
 }
 if needs != expected:
     raise SystemExit(f"generated DAG mismatch: {needs}")
+content_block = spec.split("  - id: content\n", 1)[1].split(
+    "  - id: landing\n", 1
+)[0]
+data_root = str(stamp_path.parent)
+required_content_lines = (
+    "    agent: appkit-deriver\n",
+    "    action: produce\n",
+    "    write: true\n",
+    f'    writes: ["{data_root}"]\n',
+    "    reads: []\n",
+)
+if "    cmd:" in content_block or any(
+    line not in content_block for line in required_content_lines
+):
+    raise SystemExit("generated content stage is not the isolated produce arm")
+if "content-agent/" not in content_block or "__CONTENT_PROMPT__" in spec:
+    raise SystemExit("generated content prompt is missing or unresolved")
 template_sha = hashlib.sha256(template_path.read_bytes()).hexdigest()
 stamp = stamp_path.read_text(encoding="ascii").strip()
 if stamp != template_sha or f"# template_sha256: {template_sha}" not in spec:
@@ -250,45 +268,71 @@ PY
 
 record_concurrency() {
   run_json=$1
-  python3 - "$run_json" "$HOME_ROOT/concurrency-evidence" "$PARALLEL_SUPPORTED" <<'PY'
+  python3 - "$run_json" "$HOME_ROOT" "$HOME_ROOT/concurrency-evidence" "$PARALLEL_SUPPORTED" <<'PY'
 import datetime as dt
-import json, sys
+import json, sqlite3, sys
+from pathlib import Path
 
 run = json.load(open(sys.argv[1], encoding="utf-8"))
-output = sys.argv[2]
-parallel_supported = sys.argv[3] == "1"
+home = Path(sys.argv[2])
+output = sys.argv[3]
+parallel_supported = sys.argv[4] == "1"
 by_id = {stage["id"]: stage for stage in run["stages"]}
+database = home / ".gitmoot" / "gitmoot.db"
+if not database.is_file():
+    database = home / "gitmoot.db"
+if not database.is_file():
+    raise SystemExit("Gitmoot job-event store is missing")
 
-def timestamp(stage, names):
-    for name in names:
-        value = stage.get(name)
-        if isinstance(value, (int, float)):
-            return float(value)
-        if isinstance(value, str) and value:
-            candidate = value.replace("Z", "+00:00")
-            try:
-                return dt.datetime.fromisoformat(candidate).timestamp()
-            except ValueError:
-                continue
-    return None
+def parse_time(value):
+    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.replace(tzinfo=parsed.tzinfo or dt.timezone.utc)
 
-capture = by_id["capture"]
-content = by_id["content"]
-capture_start = timestamp(capture, ("started_at", "start_time", "started"))
-capture_end = timestamp(capture, ("finished_at", "completed_at", "end_time", "ended"))
-content_start = timestamp(content, ("started_at", "start_time", "started"))
-content_end = timestamp(content, ("finished_at", "completed_at", "end_time", "ended"))
-if None in (capture_start, capture_end, content_start, content_end):
-    if parallel_supported:
-        raise SystemExit("parallel daemon run omitted stage timestamps")
-    line = "edge-only: daemon exposes no parallel worker flag\n"
-else:
-    overlap = capture_start < content_end and content_start < capture_end
-    line = (
-        f"overlap={'true' if overlap else 'false'} "
-        f"capture={capture_start:.6f}..{capture_end:.6f} "
-        f"content={content_start:.6f}..{content_end:.6f}\n"
+connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+
+def event_window(stage_id):
+    job_id = by_id[stage_id].get("job_id")
+    if not isinstance(job_id, str) or not job_id:
+        raise SystemExit(f"{stage_id} stage omitted its job id")
+    rows = connection.execute(
+        "SELECT kind,created_at FROM job_events "
+        "WHERE job_id=? AND kind IN ('running','succeeded') ORDER BY id",
+        (job_id,),
+    ).fetchall()
+    starts = [value for kind, value in rows if kind == "running"]
+    finishes = [value for kind, value in rows if kind == "succeeded"]
+    if len(starts) != 1 or len(finishes) != 1:
+        raise SystemExit(f"{stage_id} job-event window is incomplete: {rows}")
+    return job_id, starts[0], finishes[0], parse_time(starts[0]), parse_time(finishes[0])
+
+capture_job, capture_start_raw, capture_end_raw, capture_start, capture_end = event_window("capture")
+content_job, content_start_raw, content_end_raw, content_start, content_end = event_window("content")
+job_row = connection.execute(
+    "SELECT agent,type,state,model FROM jobs WHERE id=?", (content_job,)
+).fetchone()
+if job_row != ("appkit-deriver", "produce", "succeeded", "gpt-5.6-sol"):
+    raise SystemExit(f"content was not a real successful Codex produce job: {job_row}")
+agent_row = connection.execute(
+    "SELECT runtime,model,effort FROM agents WHERE name='appkit-deriver'"
+).fetchone()
+if agent_row != ("codex", "gpt-5.6-sol", "low"):
+    raise SystemExit(f"content agent model/effort pin is invalid: {agent_row}")
+overlap = capture_start <= content_end and content_start <= capture_end
+capture_event_inside_content = (
+    content_start <= capture_start <= content_end
+    or content_start <= capture_end <= content_end
+)
+if parallel_supported and (not overlap or not capture_event_inside_content):
+    raise SystemExit(
+        "content produce and capture shell job-event windows did not overlap: "
+        f"capture={capture_start_raw}..{capture_end_raw} "
+        f"content={content_start_raw}..{content_end_raw}"
     )
+line = (
+    f"overlap={'true' if overlap else 'false'} "
+    f"capture_job={capture_job} capture={capture_start_raw}..{capture_end_raw} "
+    f"content_job={content_job} content={content_start_raw}..{content_end_raw}\n"
+)
 with open(output, "a", encoding="utf-8") as handle:
     handle.write(line)
 PY
@@ -433,38 +477,6 @@ handoff_by_path = {item["path"]: item for item in handoff_manifest["artifacts"]}
 if handoff_manifest.get("counts") != expected_counts:
     raise SystemExit("framed handoff counts mismatch")
 
-content_root = data_root / "content"
-content_manifest_path = content_root / "manifest.json"
-if not content_manifest_path.is_file() or content_manifest_path.is_symlink():
-    raise SystemExit("content handoff manifest is missing or unsafe")
-content_manifest = json.load(content_manifest_path.open(encoding="utf-8"))
-content_records = content_manifest.get("artifacts")
-if not isinstance(content_records, list) or not content_records:
-    raise SystemExit("content handoff artifacts are invalid")
-content_names = {item["path"] for item in content_records}
-actual_content_files = set()
-for root, directories, files in os.walk(content_root, followlinks=False):
-    directories.sort()
-    files.sort()
-    root_path = Path(root)
-    for name in directories:
-        if (root_path / name).is_symlink():
-            raise SystemExit("content handoff contains a directory symlink")
-    for name in files:
-        path = root_path / name
-        if not stat.S_ISREG(path.lstat().st_mode):
-            raise SystemExit("content handoff contains a non-regular file")
-        actual_content_files.add(path.relative_to(content_root).as_posix())
-if actual_content_files != content_names | {"manifest.json"}:
-    raise SystemExit("content handoff tree mismatch")
-for record in content_records:
-    source = content_root / record["path"]
-    data = source.read_bytes()
-    if len(data) != record["bytes"] or hashlib.sha256(data).hexdigest() != record["sha256"]:
-        raise SystemExit(f"content handoff artifact mismatch: {record['path']}")
-    if data != (kit / record["path"]).read_bytes():
-        raise SystemExit(f"final kit did not use content handoff: {record['path']}")
-
 manifest_paths = {item["path"] for item in artifact_records}
 expected_devices = {f"landing/assets/device_{index}.png" for index in range(1, expected_count + 1)}
 actual_devices = {path for path in manifest_paths if path.startswith("landing/assets/device_")}
@@ -500,20 +512,20 @@ for index in range(1, expected_count + 1):
         raise SystemExit(f"landing did not embed device {index} from framed handoff")
 
 compose_summary = json.loads(by_id["compose-real"]["summary"])
-content_summary = json.loads(by_id["content"]["summary"])
 landing_summary = json.loads(by_id["landing"]["summary"])
+content_stage = by_id["content"]
+if (
+    content_stage.get("state") != "succeeded"
+    or not content_stage.get("job_id")
+    or not isinstance(content_stage.get("summary"), str)
+):
+    raise SystemExit("content produce stage did not complete as a real job")
 handoff_keys = {f"framed/{name}" for name in expected_framed}
 for key in handoff_keys:
     if compose_summary["digests"].get(key) != landing_summary["digests"].get(key):
         raise SystemExit(f"compose/landing handoff digest mismatch: {key}")
 if set(compose_summary["digests"]) != handoff_keys:
     raise SystemExit("compose-real summary contains cwd output artifacts")
-content_handoff_keys = {f"content/{name}" for name in actual_content_files}
-if set(content_summary["digests"]) != content_handoff_keys:
-    raise SystemExit("content summary is not the persisted handoff")
-for key in content_handoff_keys:
-    if content_summary["digests"].get(key) != landing_summary["digests"].get(key):
-        raise SystemExit(f"content/landing handoff digest mismatch: {key}")
 for key in expected_shots:
     summary_key = "out/" + key
     frame_key = f"framed/frame_{Path(key).stem.split('_')[-1]}.png"
@@ -521,11 +533,90 @@ for key in expected_shots:
         raise SystemExit(f"framed/landing screenshot identity mismatch: {summary_key}")
 if compose_summary.get("counts") != expected_counts or landing_summary.get("counts") != expected_counts:
     raise SystemExit("stage summary counts mismatch")
-if "counts" in content_summary:
-    raise SystemExit("parallel content stage unexpectedly depends on capture counts")
+content_provenance = manifest.get("content_provenance")
+if (
+    not isinstance(content_provenance, dict)
+    or content_provenance != landing_summary.get("content_provenance")
+    or content_provenance != summary.get("content_provenance")
+):
+    raise SystemExit("content provenance differs across landing, kit, and manifest")
+expected_content = {
+    f"copy/{locale}/{name}.txt"
+    for locale in ("en", "it")
+    for name in (
+        "description", "keywords", "name", "promotional_text", "release_notes", "subtitle"
+    )
+} | {"legal/privacy.md", "legal/terms.md"}
+if set(content_provenance) != expected_content or any(
+    source not in ("agent", "deterministic-fallback")
+    for source in content_provenance.values()
+):
+    raise SystemExit("content provenance has an invalid shape")
+if "agent" not in content_provenance.values():
+    raise SystemExit("content produce job supplied no valid observed files")
+content_root = data_root / "content-agent"
+for relative, source in sorted(content_provenance.items()):
+    output = kit / relative
+    if source == "agent":
+        observed_path = content_root / relative
+        if (
+            not observed_path.is_file()
+            or observed_path.is_symlink()
+            or observed_path.read_bytes() != output.read_bytes()
+        ):
+            raise SystemExit(f"agent content was not preserved: {relative}")
+
+for locale in ("en", "it"):
+    for name, limit in (
+        ("name", 30),
+        ("subtitle", 30),
+        ("promotional_text", 170),
+        ("release_notes", 4000),
+    ):
+        text = (kit / f"copy/{locale}/{name}.txt").read_text(encoding="utf-8").rstrip("\n")
+        if "\n" in text or not text or len(text) > limit:
+            raise SystemExit(f"final store field is invalid: {locale}/{name}")
+    keywords = (kit / f"copy/{locale}/keywords.txt").read_text(encoding="utf-8").rstrip("\n")
+    tokens = keywords.split(",")
+    if (
+        len(keywords) > 100
+        or any(not token or token != token.strip() or any(c.isspace() for c in token) for token in tokens)
+        or len({token.casefold() for token in tokens}) != len(tokens)
+    ):
+        raise SystemExit(f"final keywords are invalid: {locale}")
+    description = (kit / f"copy/{locale}/description.txt").read_text(encoding="utf-8").rstrip("\n")
+    if not description or len(description) > 4000:
+        raise SystemExit(f"final description is invalid: {locale}")
+for name in ("privacy", "terms"):
+    legal = (kit / f"legal/{name}.md").read_text(encoding="utf-8")
+    if "1 January 2026" not in legal or "—" in legal:
+        raise SystemExit(f"final legal source is invalid: {name}")
+
+observed = landing_summary.get("observed")
+if not isinstance(observed, dict) or any(
+    not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+    for value in observed.values()
+):
+    raise SystemExit("landing observed digest map is invalid")
+expected_observed = {
+    "out/" + relative
+    for relative, source in content_provenance.items()
+    if source == "agent"
+}
+for name in ("privacy", "terms"):
+    if content_provenance[f"legal/{name}.md"] == "agent":
+        expected_observed.add(f"out/landing/legal/{name}.html")
+if set(observed) != expected_observed:
+    raise SystemExit("landing observed file set is invalid")
+landing_output_digests = {
+    key for key in landing_summary["digests"] if key.startswith("out/")
+}
 required_landing_outputs = {"out/" + path for path in artifact_paths}
-if not required_landing_outputs.issubset(landing_summary["digests"]):
-    raise SystemExit("landing stage did not assemble the complete final tree")
+if (
+    landing_output_digests.intersection(observed)
+    or landing_output_digests | set(observed) != required_landing_outputs
+):
+    raise SystemExit("landing verified/observed partition is incomplete")
 if decoy_digest_path is not None:
     decoy_digests = set(json.load(decoy_digest_path.open(encoding="utf-8")).values())
     observed_shots = {item["sha256"] for item in report["shots"]}
@@ -555,6 +646,9 @@ if kit_report != report:
 count_line = f"Real screens: {expected_counts['real']}; synthetic padding: {expected_counts['padded']}."
 if count_line not in readme:
     raise SystemExit("kit README omits honest real/padded counts")
+for relative, source in sorted(content_provenance.items()):
+    if f"| `{relative}` | {source} |" not in readme:
+        raise SystemExit(f"kit README omits content provenance: {relative}")
 if report["ladder"] == "exported":
     if manifest.get("warnings") != [] or "Captured from " not in readme:
         raise SystemExit("exported provenance missing")
@@ -575,7 +669,7 @@ run_case() {
   decoy_digests=${4-}
   printf '%s\n' "$target" > "$DATA_ROOT/target"
   rm -f "$DATA_ROOT/order.yaml" "$DATA_ROOT/rationale.md" "$DATA_ROOT/capture-report.json"
-  rm -rf "$DATA_ROOT/screens"
+  rm -rf "$DATA_ROOT/screens" "$DATA_ROOT/content-agent"
   python3 "$REPO/tools/pro_make_pipeline.py" >/dev/null
   verify_generated_dag
   add_pipeline
@@ -592,6 +686,72 @@ decoy_digest_file=$HOME_ROOT/decoy-persisted.sha256
 run_case exported "$FULL" "$first_digest_file"
 run_case synthetic "$BARE" "$second_digest_file"
 run_case not-exported "$DECOY" "$decoy_digest_file" "$FIXTURE_ROOT/decoy-digests.json"
+
+fallback_context=$HOME_ROOT/fallback-landing-context.json
+fallback_relative_file=$HOME_ROOT/fallback-relative
+python3 - "$HOME_ROOT/not-exported-run.json" "$DATA_ROOT/kit/manifest.json" "$fallback_context" "$fallback_relative_file" <<'PY'
+import json, sys
+from pathlib import Path
+
+run = json.load(open(sys.argv[1], encoding="utf-8"))
+manifest = json.load(open(sys.argv[2], encoding="utf-8"))
+by_id = {stage["id"]: stage for stage in run["stages"]}
+stages = {}
+for stage_id in ("compose-real", "content"):
+    stage = by_id[stage_id]
+    stages[stage_id] = {
+        "id": stage_id,
+        "state": "succeeded",
+        "summary": stage["summary"],
+        "summary_truncated": False,
+    }
+context = {"complete": True, "schema_version": 1, "stages": stages}
+Path(sys.argv[3]).write_text(json.dumps(context), encoding="utf-8")
+provenance = manifest["content_provenance"]
+candidates = sorted(path for path, source in provenance.items() if source == "agent")
+if not candidates:
+    raise SystemExit("no agent-sourced file is available for fallback simulation")
+Path(sys.argv[4]).write_text(candidates[0] + "\n", encoding="utf-8")
+PY
+fallback_relative=$(cat "$fallback_relative_file")
+fallback_source=$DATA_ROOT/content-agent/$fallback_relative
+fallback_backup=$(mktemp "$HOME_ROOT/fallback-content.XXXXXX")
+cp "$fallback_source" "$fallback_backup"
+truncate -s 0 "$fallback_source"
+fallback_stdout_one=$HOME_ROOT/fallback-landing-one.stdout
+fallback_stdout_two=$HOME_ROOT/fallback-landing-two.stdout
+fallback_stderr=$HOME_ROOT/fallback-landing.stderr
+(cd "$REPO" && GITMOOT_PIPELINE_UPSTREAM_CONTEXT_FILE="$fallback_context" \
+  python3 tools/pro_stage_landing.py) >"$fallback_stdout_one" 2>"$fallback_stderr"
+fallback_digest_one=$(sha256sum "$REPO/out/$fallback_relative" | awk '{print $1}')
+(cd "$REPO" && GITMOOT_PIPELINE_UPSTREAM_CONTEXT_FILE="$fallback_context" \
+  python3 tools/pro_stage_landing.py) >"$fallback_stdout_two" 2>>"$fallback_stderr"
+fallback_digest_two=$(sha256sum "$REPO/out/$fallback_relative" | awk '{print $1}')
+cp "$fallback_backup" "$fallback_source"
+python3 - "$fallback_stdout_one" "$fallback_stdout_two" "$fallback_relative" "$DATA_ROOT/kit/manifest.json" <<'PY'
+import json, sys
+
+baseline = json.load(open(sys.argv[4], encoding="utf-8"))["content_provenance"]
+relative = sys.argv[3]
+for output in sys.argv[1:3]:
+    lines = open(output, encoding="utf-8").read().splitlines()
+    if len(lines) != 1:
+        raise SystemExit("fallback landing stdout did not contain exactly one result line")
+    result = json.loads(lines[0])["gitmoot_result"]
+    summary = json.loads(result["summary"])
+    if result["decision"] != "implemented":
+        raise SystemExit(f"fallback landing failed: {result}")
+    if summary["content_provenance"].get(relative) != "deterministic-fallback":
+        raise SystemExit("truncated agent file did not select deterministic fallback")
+    if f"out/{relative}" not in summary["digests"]:
+        raise SystemExit("fallback file was not included in verified digests")
+    for path, source in baseline.items():
+        if path != relative and summary["content_provenance"].get(path) != source:
+            raise SystemExit(f"unrelated provenance changed during fallback: {path}")
+PY
+[ "$fallback_digest_one" = "$fallback_digest_two" ] || fail "truncated agent fallback was not deterministic"
+grep -F "content fallback: $fallback_relative/empty" "$fallback_stderr" >/dev/null || fail "fallback reason missing from landing stderr"
+
 first_digest=$(cat "$first_digest_file")
 second_digest=$(cat "$second_digest_file")
 decoy_digest=$(cat "$decoy_digest_file")
@@ -702,6 +862,7 @@ live_after=$(snapshot_live_root)
 printf '%s\n' "pro_e2e: live root unchanged $live_after"
 printf '%s\n' "pro_e2e: persisted exported=$first_digest synthetic=$second_digest (overwrite confirmed)"
 printf '%s\n' "pro_e2e: decoy non-exported=$decoy_digest; nested decoy digests absent; boundary log present"
+printf '%s\n' "pro_e2e: truncated agent file $fallback_relative used deterministic fallback=$fallback_digest_one"
 if [ "$PARALLEL_SUPPORTED" = 1 ]; then
   printf '%s\n' "pro_e2e: concurrency $(grep '^overlap=true ' "$HOME_ROOT/concurrency-evidence" | head -n 1)"
 else

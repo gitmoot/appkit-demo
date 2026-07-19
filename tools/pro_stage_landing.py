@@ -6,8 +6,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import frame_compose
+import pro_agent_content
 import pro_assemble
-import pro_content_handoff
 import pro_handoff
 import pro_inputs
 import render
@@ -22,53 +22,82 @@ from stage_support import (
 )
 
 
+def _verify_branches(
+    context: dict[str, object],
+    values: dict[str, object],
+    framed_digests: dict[str, str],
+    count: int,
+) -> None:
+    if context.get("schema_version") != 1 or context.get("complete") is not True:
+        raise stage_kit.VerificationError("context_incomplete")
+    stages = context.get("stages")
+    if not isinstance(stages, dict) or sorted(stages) != ["compose-real", "content"]:
+        raise stage_kit.VerificationError("context_stages")
+    content_stage = stages.get("content")
+    if (
+        not isinstance(content_stage, dict)
+        or content_stage.get("id") != "content"
+        or content_stage.get("state") != "succeeded"
+        or content_stage.get("summary_truncated") is not False
+        or not isinstance(content_stage.get("summary"), str)
+    ):
+        raise stage_kit.VerificationError("context_stage_invalid")
+    compose_context = {
+        "complete": True,
+        "schema_version": 1,
+        "stages": {"compose-real": stages["compose-real"]},
+    }
+    summaries = stage_kit._upstream_summaries(
+        compose_context,
+        values,
+        ("compose-real",),
+        {"compose-real": {"counts", "persisted"}},
+    )
+    stage_kit._verify_upstream(
+        values,
+        framed_digests,
+        summaries,
+        ("compose-real",),
+        {"compose-real": pro_handoff.expected_digest_keys(count)},
+    )
+
+
 def run_landing(values: dict[str, object]) -> dict[str, object]:
     frame_compose.verify_assets()
     prepare_output_tree()
     context = stage_kit._load_context()
     report = pro_inputs.load_capture_report()
     framed, device_pngs, framed_digests = pro_handoff.load_assets(values, report)
-    content_payloads, content_digests = pro_content_handoff.load_assets(values)
     count = len(framed)
+    _verify_branches(context, values, framed_digests, count)
+    content = pro_agent_content.inspect(values)
+    for relative in sorted(content.reasons):
+        log(f"content fallback: {relative}/{content.reasons[relative]}")
 
-    handoff_digests = dict(framed_digests)
-    if set(handoff_digests).intersection(content_digests):
-        raise stage_kit.VerificationError("landing_digest_overlap")
-    handoff_digests.update(content_digests)
-    summaries = stage_kit._upstream_summaries(
-        context,
-        values,
-        ("compose-real", "content"),
-        {
-            "compose-real": {"counts", "persisted"},
-            "content": {"persisted"},
-        },
-    )
-    stage_kit._verify_upstream(
-        values,
-        handoff_digests,
-        summaries,
-        ("compose-real", "content"),
-        {
-            "compose-real": pro_handoff.expected_digest_keys(count),
-            "content": pro_content_handoff.expected_digest_keys(values),
-        },
-    )
-
-    outputs = pro_assemble.assemble(
+    assembly = pro_assemble.assemble(
         values,
         report,
         framed,
         device_pngs,
-        content_payloads,
         framed_digests,
-        content_digests,
+        content,
     )
-    digests = identity_digests(outputs, Path.cwd())
-    if set(digests).intersection(handoff_digests):
+    all_digests = identity_digests(assembly.paths, Path.cwd())
+    verified_keys = pro_agent_content.verified_output_keys(
+        pro_assemble.expected_output_relpaths(values, count),
+        content.provenance,
+    )
+    digests = {key: all_digests[key] for key in verified_keys}
+    if set(digests).intersection(framed_digests):
         raise stage_kit.VerificationError("landing_digest_overlap")
-    digests.update(handoff_digests)
-    return success_summary(values, digests, counts=report["counts"])
+    digests.update(framed_digests)
+    return success_summary(
+        values,
+        digests,
+        content_provenance=content.provenance,
+        counts=report["counts"],
+        observed=assembly.observed,
+    )
 
 
 def main() -> None:

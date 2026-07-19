@@ -156,6 +156,7 @@ def _write_manifest(
     paths: list[Path],
     values: dict[str, object],
     warnings: list[str] | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> tuple[Path, int]:
     out = Path.cwd() / "out"
     records: list[dict[str, object]] = []
@@ -176,6 +177,11 @@ def _write_manifest(
     }
     if warnings is not None:
         manifest["warnings"] = warnings
+    if metadata is not None:
+        if set(metadata).intersection(manifest):
+            raise VerificationError("manifest_metadata")
+        for key in sorted(metadata):
+            manifest[key] = metadata[key]
     manifest_path = safe_output_path("out/manifest.json")
     manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8", newline="\n")
     return manifest_path, len(records)
@@ -230,6 +236,7 @@ def run_kit(
     extra_identity_digests: dict[str, str] | None = None,
     upstream_summary_extras: dict[str, set[str]] | None = None,
     artifact_builder: Callable[[dict[str, object]], list[Path]] | None = None,
+    manifest_metadata: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Regenerate, cross-check, and package a public or personal kit."""
 
@@ -315,6 +322,7 @@ def run_kit(
         artifact_paths,
         values,
         warnings=manifest_warnings,
+        metadata=manifest_metadata,
     )
     _require_exact_tree(base_relpaths | {"manifest.json"})
     zip_path = _write_zip(artifact_paths, manifest_path)

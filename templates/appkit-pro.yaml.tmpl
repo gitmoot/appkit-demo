@@ -22,9 +22,15 @@ __DERIVE_PROMPT__
     needs: [capture, derive]
     timeout: 8m
   - id: content
-    cmd: python3 tools/pro_stage_content.py
+    agent: appkit-deriver
+    action: produce
+    write: true
+    writes: [__DATA_ROOT__]
+    reads: []
     needs: [derive]
     timeout: 8m
+    prompt: |
+__CONTENT_PROMPT__
   - id: landing
     cmd: python3 tools/pro_stage_landing.py
     needs: [content, compose-real]
