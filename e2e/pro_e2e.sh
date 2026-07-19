@@ -158,7 +158,19 @@ print(json.load(open(sys.argv[1], encoding="utf-8"))["state"])
 PY
 )
     case "$state" in
-      succeeded) return ;;
+      succeeded)
+        # Re-read after success so persistence is checked only after the daemon
+        # has settled the terminal run state.
+        sleep 1
+        gitmoot pipeline show "$run_id" --json --home "$HOME_ROOT" > "$run_json"
+        settled=$(python3 - "$run_json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8"))["state"])
+PY
+)
+        [ "$settled" = succeeded ] || fail "pipeline run $run_id did not remain settled"
+        return
+        ;;
       failed|blocked|cancelled)
         cat "$run_json" >&2
         fail "pipeline run $run_id ended $state"
@@ -169,70 +181,87 @@ PY
   done
 }
 
-materialize_kit() {
+verify_persisted_kit() {
   run_json=$1
-  context=$2
-  python3 - "$run_json" "$context" <<'PY'
-import json, sys
+  expected=$2
+  digest_file=$3
+  python3 - "$run_json" "$DATA_ROOT" "$expected" "$digest_file" <<'PY'
+import hashlib, json, os, stat, sys, zipfile
+from pathlib import Path
 
 run = json.load(open(sys.argv[1], encoding="utf-8"))
+data_root = Path(sys.argv[2])
+expected = sys.argv[3]
+digest_file = Path(sys.argv[4])
+kit = data_root / "kit"
 by_id = {stage["id"]: stage for stage in run["stages"]}
-stages = {}
-for stage_id in ("compose-real", "content"):
-    stage = by_id.get(stage_id)
-    if not stage or stage.get("state") != "succeeded" or not isinstance(stage.get("summary"), str):
-        raise SystemExit(f"missing successful {stage_id} summary")
-    stages[stage_id] = {
-        "id": stage_id,
-        "state": "succeeded",
-        "summary": stage["summary"],
-        "summary_truncated": False,
-    }
-context = {"complete": True, "schema_version": 1, "stages": stages}
-with open(sys.argv[2], "w", encoding="utf-8", newline="\n") as handle:
-    json.dump(context, handle, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    handle.write("\n")
-PY
-  (
-    cd "$REPO"
-    GITMOOT_PIPELINE_UPSTREAM_CONTEXT_FILE="$context" python3 tools/pro_stage_kit.py > "$HOME_ROOT/materialize-result.json"
-  )
-  python3 - "$HOME_ROOT/materialize-result.json" <<'PY'
-import json, sys
-lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
-if len(lines) != 1 or json.loads(lines[0])["gitmoot_result"]["decision"] != "implemented":
-    raise SystemExit("materialized kit did not implement")
-PY
-}
+stage = by_id.get("kit")
+if not stage or stage.get("state") != "succeeded" or not isinstance(stage.get("summary"), str):
+    raise SystemExit("missing successful kit summary")
+summary = json.loads(stage["summary"])
+persisted = summary.get("persisted")
+if not isinstance(persisted, dict) or sorted(persisted) != ["path", "zip_sha256"] or persisted.get("path") != str(kit):
+    raise SystemExit("kit summary has an invalid persisted destination")
+expected_zip_sha = persisted["zip_sha256"]
+if not isinstance(expected_zip_sha, str) or len(expected_zip_sha) != 64:
+    raise SystemExit("kit summary has an invalid persisted zip digest")
+if summary.get("digests", {}).get("out/launch-kit.zip") != expected_zip_sha:
+    raise SystemExit("persisted digest differs from the in-worktree zip digest")
 
-run_case() {
-  expected=$1
-  target=$2
-  printf '%s\n' "$target" > "$DATA_ROOT/target"
-  rm -f "$DATA_ROOT/order.yaml" "$DATA_ROOT/rationale.md" "$DATA_ROOT/capture-report.json"
-  rm -rf "$DATA_ROOT/screens"
-  python3 "$REPO/tools/pro_make_pipeline.py" >/dev/null
-  add_pipeline
-  run_id=$(gitmoot pipeline run appkit-pro --home "$HOME_ROOT")
-  run_json="$HOME_ROOT/$expected-run.json"
-  context="$HOME_ROOT/$expected-context.json"
-  wait_run "$run_id" "$run_json"
-  materialize_kit "$run_json" "$context"
-  python3 - "$DATA_ROOT/capture-report.json" "$REPO/out/manifest.json" "$REPO/out/launch-kit.zip" "$expected" <<'PY'
-import json, sys, zipfile
+zip_path = kit / "launch-kit.zip"
+if not zip_path.is_file() or zip_path.is_symlink():
+    raise SystemExit("persisted launch-kit.zip is missing or unsafe")
+actual_zip_sha = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+if actual_zip_sha != expected_zip_sha:
+    raise SystemExit("persisted zip does not match the run result digest")
 
-report = json.load(open(sys.argv[1], encoding="utf-8"))
-manifest = json.load(open(sys.argv[2], encoding="utf-8"))
-expected = sys.argv[4]
+manifest_path = kit / "manifest.json"
+if not manifest_path.is_file() or manifest_path.is_symlink():
+    raise SystemExit("persisted manifest is missing or unsafe")
+manifest = json.load(manifest_path.open(encoding="utf-8"))
+artifact_records = manifest.get("artifacts")
+if not isinstance(artifact_records, list):
+    raise SystemExit("persisted manifest artifacts are invalid")
+artifact_paths = {record["path"] for record in artifact_records}
+expected_files = artifact_paths | {"manifest.json", "launch-kit.zip"}
+actual_files = set()
+for root, directories, files in os.walk(kit, followlinks=False):
+    directories.sort()
+    files.sort()
+    root_path = Path(root)
+    for name in directories:
+        path = root_path / name
+        if stat.S_ISLNK(path.lstat().st_mode):
+            raise SystemExit("persisted tree contains a directory symlink")
+    for name in files:
+        path = root_path / name
+        mode = path.lstat().st_mode
+        if not stat.S_ISREG(mode):
+            raise SystemExit("persisted tree contains a non-regular file")
+        actual_files.add(path.relative_to(kit).as_posix())
+if actual_files != expected_files:
+    raise SystemExit(f"persisted tree mismatch: {sorted(actual_files ^ expected_files)}")
+for record in artifact_records:
+    path = kit / record["path"]
+    data = path.read_bytes()
+    if len(data) != record["bytes"] or hashlib.sha256(data).hexdigest() != record["sha256"]:
+        raise SystemExit(f"persisted artifact mismatch: {record['path']}")
+
+report = json.load((data_root / "capture-report.json").open(encoding="utf-8"))
 if report["ladder"] != expected:
     raise SystemExit(f"ladder={report['ladder']}, expected={expected}")
-with zipfile.ZipFile(sys.argv[3]) as archive:
+with zipfile.ZipFile(zip_path) as archive:
     names = set(archive.namelist())
+    if names != artifact_paths | {"manifest.json"}:
+        raise SystemExit(f"zip member mismatch: {sorted(names ^ (artifact_paths | {'manifest.json'}))}")
     required = {"capture-report.json", "screenshots/en/shot_1.png", "README.md", "manifest.json"}
     if not required.issubset(names):
         raise SystemExit(f"kit zip missing {sorted(required - names)}")
     kit_report = json.loads(archive.read("capture-report.json"))
     readme = archive.read("README.md").decode("utf-8")
+    for name in sorted(names):
+        if archive.read(name) != (kit / name).read_bytes():
+            raise SystemExit(f"zip member differs from persisted file: {name}")
 if kit_report != report:
     raise SystemExit("kit capture report differs from observed report")
 if expected == "exported":
@@ -242,11 +271,32 @@ else:
     warning = "synthetic screens: no exported screenshots found and web capture unavailable/failed"
     if warning not in manifest.get("warnings", []) or "Synthesized deterministically" not in readme:
         raise SystemExit("synthetic warning/provenance missing")
+digest_file.write_text(actual_zip_sha + "\n", encoding="ascii")
 PY
 }
 
-run_case exported "$FULL"
-run_case synthetic "$BARE"
+run_case() {
+  expected=$1
+  target=$2
+  digest_file=$3
+  printf '%s\n' "$target" > "$DATA_ROOT/target"
+  rm -f "$DATA_ROOT/order.yaml" "$DATA_ROOT/rationale.md" "$DATA_ROOT/capture-report.json"
+  rm -rf "$DATA_ROOT/screens"
+  python3 "$REPO/tools/pro_make_pipeline.py" >/dev/null
+  add_pipeline
+  run_id=$(gitmoot pipeline run appkit-pro --home "$HOME_ROOT")
+  run_json="$HOME_ROOT/$expected-run.json"
+  wait_run "$run_id" "$run_json"
+  verify_persisted_kit "$run_json" "$expected" "$digest_file"
+}
+
+first_digest_file=$HOME_ROOT/exported-persisted.sha256
+second_digest_file=$HOME_ROOT/synthetic-persisted.sha256
+run_case exported "$FULL" "$first_digest_file"
+run_case synthetic "$BARE" "$second_digest_file"
+first_digest=$(cat "$first_digest_file")
+second_digest=$(cat "$second_digest_file")
+[ "$first_digest" != "$second_digest" ] || fail "second run did not overwrite the first persisted kit"
 
 expose_log=$HOME_ROOT/expose-rejection.log
 if gitmoot pipeline expose --schema "$REPO/schema.json" --home "$HOME_ROOT" appkit-pro >"$expose_log" 2>&1; then
@@ -266,4 +316,5 @@ cmp "$HOME_ROOT/public-a/kit/out/launch-kit.zip" "$HOME_ROOT/public-b/kit/out/la
 live_after=$(snapshot_live_root)
 [ "$live_before" = "$live_after" ] || fail "live $LIVE_DATA_ROOT changed during E2E"
 printf '%s\n' "pro_e2e: live root unchanged $live_after"
-printf '%s\n' 'pro_e2e: fixture-full exported, fixture-bare synthetic, expose rejected, public determinism matched'
+printf '%s\n' "pro_e2e: persisted exported=$first_digest synthetic=$second_digest (overwrite confirmed)"
+printf '%s\n' 'pro_e2e: fixture-full exported, fixture-bare synthetic, persistence verified, expose rejected, public determinism matched'

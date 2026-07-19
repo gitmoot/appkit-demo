@@ -10,9 +10,9 @@ gitmoot pipeline add appkit-pro.yaml --force
 gitmoot pipeline run appkit-pro
 ```
 
-The kit lands in the checkout stage's `out/`; the assembled deliverable is `out/launch-kit.zip`.
+The kit persists at `/root/appkit-pro-data/kit/launch-kit.zip`. A successful run freshly replaces that `kit/` tree, so copy out anything you want to retain before running another order.
 
-`/root/appkit-pro-data` is the default personal side channel. To isolate another run, export `APPKIT_PRO_DATA_DIR=/absolute/private/data-dir` before writing `target`, generating the pipeline, starting the worker, and running it. The generator binds that same directory into the produce-stage write grant and derive prompt.
+`/root/appkit-pro-data` is the default personal side channel. To isolate another run, export `APPKIT_PRO_DATA_DIR=/absolute/private/data-dir` before writing `target`, generating the pipeline, starting the worker, and running it. The generator binds that same directory into the produce-stage write grant and derive prompt, and the deliverable moves with it to `$APPKIT_PRO_DATA_DIR/kit/launch-kit.zip`.
 
 This is intentionally a personal, unexposable pipeline. The generated produce stage needs a static read grant for the target repository and a write grant for the selected data directory (default `/root/appkit-pro-data`), so the live home may surface sandbox-approval friction for those paths. Capture prefers exported screenshots, then a real browser rendering of a Flutter or built web surface, then deterministic synthesis. Browser capture is not simulator capture, so native-only screens need exported images for full fidelity.
 
