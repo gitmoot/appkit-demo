@@ -127,6 +127,7 @@ def _verify_upstream(
     values: dict[str, object],
     own_digests: dict[str, str],
     summaries: dict[str, dict[str, object]],
+    required_stage_ids: tuple[str, ...] = ("compose", "content"),
     expected_groups: dict[str, list[str]] | None = None,
 ) -> None:
     if expected_groups is None:
@@ -134,7 +135,12 @@ def _verify_upstream(
             "compose": screens.expected_screenshot_relpaths(values),
             "content": render.expected_content_relpaths(values),
         }
-    for stage_id in summaries:
+    if (
+        sorted(summaries) != sorted(required_stage_ids)
+        or sorted(expected_groups) != sorted(required_stage_ids)
+    ):
+        raise VerificationError("summary_stages")
+    for stage_id in required_stage_ids:
         expected = {
             path: own_digests[path] for path in sorted(expected_groups[stage_id])
         }
@@ -236,7 +242,13 @@ def run_kit(
         key=lambda path: path.as_posix(),
     )
     upstream_digests = identity_digests(upstream_paths, Path.cwd())
-    _verify_upstream(values, upstream_digests, summaries, expected_groups)
+    _verify_upstream(
+        values,
+        upstream_digests,
+        summaries,
+        stage_ids,
+        expected_groups,
+    )
 
     upstream_relpaths = {
         path.relative_to(Path.cwd() / "out").as_posix()
@@ -285,7 +297,9 @@ def run_kit(
 def main() -> None:
     try:
         values = load_inputs()
-        emit_result("implemented", run_kit(values, _load_context()))
+        prepare_output_tree()
+        context = _load_context()
+        emit_result("implemented", run_kit(values, context))
     except InputError as error:
         log(f"validation failed: {error.field}/{error.code}")
         emit_result("failed", failure_summary(f"validation:{error.field}:{error.code}"))

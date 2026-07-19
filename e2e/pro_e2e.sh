@@ -3,7 +3,8 @@ set -eu
 
 REPO=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 FIXTURE_ROOT=/root/appkit-pro-fixture
-DATA_ROOT=/root/appkit-pro-data
+DATA_ROOT=/root/appkit-pro-e2e-data
+LIVE_DATA_ROOT=/root/appkit-pro-data
 HOME_ROOT=/root/appkit-pro-e2e-home
 FULL="$FIXTURE_ROOT/fixture-full"
 BARE="$FIXTURE_ROOT/fixture-bare"
@@ -13,12 +14,55 @@ fail() {
   exit 1
 }
 
-case "$FIXTURE_ROOT:$DATA_ROOT:$HOME_ROOT" in
-  /root/appkit-pro-fixture:/root/appkit-pro-data:/root/appkit-pro-e2e-home) ;;
+case "$FIXTURE_ROOT:$DATA_ROOT:$LIVE_DATA_ROOT:$HOME_ROOT" in
+  /root/appkit-pro-fixture:/root/appkit-pro-e2e-data:/root/appkit-pro-data:/root/appkit-pro-e2e-home) ;;
   *) fail "unsafe fixed roots" ;;
 esac
 
-rm -rf "$FIXTURE_ROOT" "$HOME_ROOT"
+snapshot_live_root() {
+  python3 - "$LIVE_DATA_ROOT" <<'PY'
+from pathlib import Path
+import hashlib, json, os, stat, sys
+
+root = Path(sys.argv[1])
+records = []
+if not root.exists() and not root.is_symlink():
+    records.append({"missing": True})
+else:
+    for path in [root, *sorted(root.rglob("*"), key=lambda item: item.as_posix())]:
+        info = path.lstat()
+        record = {
+            "mode": stat.S_IFMT(info.st_mode) | stat.S_IMODE(info.st_mode),
+            "mtime_ns": info.st_mtime_ns,
+            "path": "." if path == root else path.relative_to(root).as_posix(),
+            "size": info.st_size,
+        }
+        if stat.S_ISREG(info.st_mode):
+            record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        elif stat.S_ISLNK(info.st_mode):
+            record["target"] = os.readlink(path)
+        records.append(record)
+payload = json.dumps(records, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+print(hashlib.sha256(payload.encode("utf-8")).hexdigest())
+PY
+}
+
+live_before=$(snapshot_live_root)
+export APPKIT_PRO_DATA_DIR=$DATA_ROOT
+
+require_writable_e2e_root() {
+  root=$1
+  [ ! -L "$root" ] || fail "$root is a symlink"
+  mkdir -p "$root" || fail "cannot create $root"
+  probe=$root/.appkit-pro-e2e-write-probe.$$
+  touch "$probe" || fail "$root is not writable"
+  rm -f "$probe"
+}
+
+require_writable_e2e_root "$FIXTURE_ROOT"
+require_writable_e2e_root "$HOME_ROOT"
+require_writable_e2e_root "$DATA_ROOT"
+rm -rf "$FIXTURE_ROOT" "$HOME_ROOT" "$DATA_ROOT"
 mkdir -p "$FIXTURE_ROOT" || fail "cannot create $FIXTURE_ROOT (the coordinator needs a writable /root fixture grant)"
 mkdir -p "$FULL/docs/store/screenshots/en" "$FULL/lib/theme" "$BARE/docs/store/screenshots/en" "$BARE/lib/theme" "$DATA_ROOT"
 
@@ -219,4 +263,7 @@ sh "$REPO/scripts/demo-kit.sh" "$HOME_ROOT/public-b" >/dev/null
 cmp "$HOME_ROOT/public-a/kit/out/manifest.json" "$HOME_ROOT/public-b/kit/out/manifest.json"
 cmp "$HOME_ROOT/public-a/kit/out/launch-kit.zip" "$HOME_ROOT/public-b/kit/out/launch-kit.zip"
 
+live_after=$(snapshot_live_root)
+[ "$live_before" = "$live_after" ] || fail "live $LIVE_DATA_ROOT changed during E2E"
+printf '%s\n' "pro_e2e: live root unchanged $live_after"
 printf '%s\n' 'pro_e2e: fixture-full exported, fixture-bare synthetic, expose rejected, public determinism matched'

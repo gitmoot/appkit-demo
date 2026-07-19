@@ -31,7 +31,7 @@ def _captured_images(report: dict[str, object]) -> list[Image.Image]:
     for item in shots:
         if not isinstance(item, dict):
             raise pro_inputs.ProDataError("capture report shot is malformed")
-        path = pro_inputs.DATA_ROOT / "screens" / str(item["file"])
+        path = pro_inputs.data_root() / "screens" / str(item["file"])
         if not path.is_file() or path.is_symlink() or _sha256(path) != item["sha256"]:
             raise pro_inputs.ProDataError("captured screenshot missing or changed")
         with Image.open(path) as image:

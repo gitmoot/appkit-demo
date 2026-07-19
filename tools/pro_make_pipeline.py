@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 
-from pro_inputs import load_target
+import pro_inputs
 
 
 HERE = Path(__file__).resolve().parent
@@ -24,13 +24,23 @@ def _read(path: Path) -> str:
 
 
 def main() -> None:
-    target = load_target()
+    target = pro_inputs.load_target()
+    data_root = pro_inputs.data_root()
     template = _read(TEMPLATE)
     prompt = _read(PROMPT).rstrip("\n")
-    if template.count("__TARGET_REPO__") != 1 or template.count("__DERIVE_PROMPT__") != 1:
+    if (
+        template.count("__DATA_ROOT__") != 1
+        or template.count("__TARGET_REPO__") != 1
+        or template.count("__DERIVE_PROMPT__") != 1
+        or prompt.count("__DATA_ROOT__") != 2
+        or prompt.count("__TARGET_REPO__") != 1
+    ):
         raise RuntimeError("pipeline template markers are invalid")
+    prompt = prompt.replace("__DATA_ROOT__", str(data_root))
+    prompt = prompt.replace("__TARGET_REPO__", json.dumps(str(target)))
     prompt_block = "\n".join("      " + line for line in prompt.splitlines())
     rendered = template.replace("__TARGET_REPO__", json.dumps(str(target)))
+    rendered = rendered.replace("__DATA_ROOT__", json.dumps(str(data_root)))
     rendered = rendered.replace("__DERIVE_PROMPT__", prompt_block)
     temporary = OUTPUT.with_name(OUTPUT.name + ".tmp")
     if OUTPUT.is_symlink() or temporary.is_symlink():

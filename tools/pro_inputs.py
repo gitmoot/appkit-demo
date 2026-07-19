@@ -11,7 +11,8 @@ from pathlib import Path
 from inputs import FIELD_LIMITS, InputError, validate_inputs
 
 
-DATA_ROOT = Path("/root/appkit-pro-data")
+DEFAULT_DATA_ROOT = Path("/root/appkit-pro-data")
+DATA_ROOT = Path(os.environ.get("APPKIT_PRO_DATA_DIR", str(DEFAULT_DATA_ROOT)))
 TARGET_FILE = "target"
 ORDER_FILE = "order.yaml"
 REPORT_FILE = "capture-report.json"
@@ -22,6 +23,18 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 class ProDataError(RuntimeError):
     pass
+
+
+def data_root() -> Path:
+    value = str(DATA_ROOT)
+    if (
+        not DATA_ROOT.is_absolute()
+        or DATA_ROOT == Path("/")
+        or unicodedata.normalize("NFC", value) != value
+        or any(unicodedata.category(char).startswith("C") for char in value)
+    ):
+        raise ProDataError("personal data directory path is unsafe")
+    return DATA_ROOT
 
 
 def _safe_regular(path: Path, maximum: int) -> str:
@@ -36,17 +49,19 @@ def _safe_regular(path: Path, maximum: int) -> str:
 
 
 def require_data_root() -> Path:
+    root = data_root()
     try:
-        DATA_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
     except OSError as error:
         raise ProDataError("personal data directory unavailable") from error
-    if not DATA_ROOT.is_dir() or DATA_ROOT.is_symlink():
+    if not root.is_dir() or root.is_symlink():
         raise ProDataError("personal data directory unsafe")
-    return DATA_ROOT
+    return root
 
 
 def load_target() -> Path:
-    text = _safe_regular(DATA_ROOT / TARGET_FILE, 4096)
+    root = data_root()
+    text = _safe_regular(root / TARGET_FILE, 4096)
     lines = text.splitlines()
     if len(lines) != 1 or not lines[0].strip():
         raise ProDataError("target must contain exactly one path line")
@@ -60,7 +75,7 @@ def load_target() -> Path:
     if resolved == Path("/") or not resolved.is_dir() or resolved.is_symlink():
         raise ProDataError("target repository path is unsafe")
     try:
-        resolved.relative_to(DATA_ROOT.resolve(strict=False))
+        resolved.relative_to(root.resolve(strict=False))
     except ValueError:
         pass
     else:
@@ -68,22 +83,66 @@ def load_target() -> Path:
     return resolved
 
 
+def _strip_inline_comment(raw: str) -> str:
+    quote = ""
+    escaped = False
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if quote == '"':
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+        elif quote == "'":
+            if char == quote:
+                if index + 1 < len(raw) and raw[index + 1] == quote:
+                    index += 1
+                else:
+                    quote = ""
+        elif char in ('"', "'"):
+            quote = char
+        elif char == "#" and index > 0 and raw[index - 1].isspace():
+            return raw[:index].strip()
+        index += 1
+    return raw.strip()
+
+
 def _parse_scalar(raw: str) -> str:
-    value = raw.strip()
+    value = _strip_inline_comment(raw)
     if not value:
         return ""
     if value.startswith('"'):
         try:
-            parsed = json.loads(value)
+            parsed, end = json.JSONDecoder().raw_decode(value)
         except json.JSONDecodeError as error:
             raise ProDataError("order contains invalid quoted scalar") from error
         if not isinstance(parsed, str):
             raise ProDataError("order values must be strings")
+        remainder = value[end:].strip()
+        if remainder and not remainder.startswith("#"):
+            raise ProDataError("order contains invalid quoted scalar")
         return parsed
     if value.startswith("'"):
-        if len(value) < 2 or not value.endswith("'"):
+        end = 1
+        content: list[str] = []
+        while end < len(value):
+            if value[end] == "'":
+                if end + 1 < len(value) and value[end + 1] == "'":
+                    content.append("'")
+                    end += 2
+                    continue
+                break
+            content.append(value[end])
+            end += 1
+        if end >= len(value) or value[end] != "'":
             raise ProDataError("order contains invalid quoted scalar")
-        return value[1:-1].replace("''", "'")
+        remainder = value[end + 1 :].strip()
+        if remainder and not remainder.startswith("#"):
+            raise ProDataError("order contains invalid quoted scalar")
+        return "".join(content)
     if value[0] in "[{&*!>|%@`":
         raise ProDataError("order contains unsupported YAML syntax")
     return value
@@ -91,6 +150,7 @@ def _parse_scalar(raw: str) -> str:
 
 def parse_order(text: str) -> dict[str, object]:
     source: dict[str, object] = {}
+    order_target: str | None = None
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -99,11 +159,20 @@ def parse_order(text: str) -> dict[str, object]:
             raise ProDataError("order must be a flat string mapping")
         key, raw_value = line.split(":", 1)
         key = key.strip()
-        if key not in FIELD_LIMITS:
+        if key != "target" and key not in FIELD_LIMITS:
             raise ProDataError("order contains an unknown key")
+        if key == "target":
+            if order_target is not None:
+                raise ProDataError("order contains a duplicate key")
+            order_target = _parse_scalar(raw_value)
+            continue
         if key in source:
             raise ProDataError("order contains a duplicate key")
         source[key] = _parse_scalar(raw_value)
+    if order_target is None:
+        raise ProDataError("order is missing target")
+    if order_target != str(load_target()):
+        raise ProDataError("stale_order: order.yaml was derived for a different target")
     try:
         return validate_inputs(source, app_name_default=PRO_APP_NAME_DEFAULT)
     except InputError as error:
@@ -111,15 +180,15 @@ def parse_order(text: str) -> dict[str, object]:
 
 
 def load_order() -> dict[str, object]:
-    return parse_order(_safe_regular(DATA_ROOT / ORDER_FILE, 16 * 1024))
+    return parse_order(_safe_regular(data_root() / ORDER_FILE, 16 * 1024))
 
 
 def require_rationale() -> None:
-    _safe_regular(DATA_ROOT / RATIONALE_FILE, 64 * 1024)
+    _safe_regular(data_root() / RATIONALE_FILE, 64 * 1024)
 
 
 def load_capture_report() -> dict[str, object]:
-    text = _safe_regular(DATA_ROOT / REPORT_FILE, 64 * 1024)
+    text = _safe_regular(data_root() / REPORT_FILE, 64 * 1024)
     try:
         report = json.loads(text)
     except json.JSONDecodeError as error:

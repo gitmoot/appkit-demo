@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import shutil
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -23,7 +25,7 @@ import screens
 from stage_support import canonical_json, emit_result, failure_summary, log
 
 
-MAX_CAPTURE_SECONDS = 15 * 60
+MAX_CAPTURE_SECONDS = 13 * 60
 MAX_FLUTTER_SECONDS = 12 * 60
 MIN_EXPORT_BYTES = 10 * 1024
 MAX_EXPORT_PIXELS = 100_000_000
@@ -162,9 +164,12 @@ def _is_export_location(relative: Path) -> bool:
     return False
 
 
-def _walk_files(root: Path) -> list[Path]:
+def _walk_files(root: Path, deadline: float | None = None) -> list[Path]:
     result: list[Path] = []
     for directory, dir_names, file_names in os.walk(root, followlinks=False):
+        if deadline is not None and time.monotonic() >= deadline:
+            log("capture scan deadline reached")
+            break
         dir_names[:] = sorted(
             name
             for name in dir_names
@@ -172,15 +177,20 @@ def _walk_files(root: Path) -> list[Path]:
             and not (Path(directory) / name).is_symlink()
         )
         for name in sorted(file_names):
+            if deadline is not None and time.monotonic() >= deadline:
+                log("capture scan deadline reached")
+                return result
             path = Path(directory) / name
             if not path.is_symlink():
                 result.append(path)
     return result
 
 
-def _export_candidates(target: Path) -> list[Path]:
+def _export_candidates(target: Path, deadline: float) -> list[Path]:
     candidates: list[Path] = []
-    for path in _walk_files(target):
+    for path in _walk_files(target, deadline):
+        if time.monotonic() >= deadline:
+            break
         relative = path.relative_to(target)
         if not _is_export_location(relative) or path.suffix.casefold() not in (".png", ".jpg", ".jpeg"):
             continue
@@ -191,7 +201,12 @@ def _export_candidates(target: Path) -> list[Path]:
                 if image.format not in ("PNG", "JPEG") or image.width < 400:
                     continue
                 image.verify()
-        except (OSError, ValueError):
+        except (
+            OSError,
+            ValueError,
+            Image.DecompressionBombError,
+            Image.DecompressionBombWarning,
+        ):
             continue
         candidates.append(path)
 
@@ -204,19 +219,29 @@ def _export_candidates(target: Path) -> list[Path]:
     return sorted(candidates, key=key)[:3]
 
 
-def _capture_exports(target: Path, destination: Path) -> tuple[str, list[Path]] | None:
+def _capture_exports(
+    target: Path, destination: Path, deadline: float
+) -> tuple[str, list[Path]] | None:
     log("capture ladder attempt: exported screenshots")
-    candidates = _export_candidates(target)
+    candidates = _export_candidates(target, deadline)
     if not candidates:
         log("capture ladder exported: no qualifying raster exports")
         return None
     outputs: list[Path] = []
     selected: list[Path] = []
     for source in candidates:
+        if time.monotonic() >= deadline:
+            log("capture ladder exported: deadline reserved for fallback")
+            break
         output = destination / f"shot_{len(outputs) + 1}.png"
         try:
             _save_normalized(source, output)
-        except (OSError, ValueError):
+        except (
+            OSError,
+            ValueError,
+            Image.DecompressionBombError,
+            Image.DecompressionBombWarning,
+        ):
             log("capture ladder exported: skipped unreadable candidate")
             if output.exists() and not output.is_symlink():
                 output.unlink()
@@ -230,17 +255,17 @@ def _capture_exports(target: Path, destination: Path) -> tuple[str, list[Path]] 
     return str(selected[0]), outputs
 
 
-def _find_flutter_dirs(target: Path) -> list[Path]:
+def _find_flutter_dirs(target: Path, deadline: float) -> list[Path]:
     directories: set[Path] = set()
-    for path in _walk_files(target):
+    for path in _walk_files(target, deadline):
         if path.name == "pubspec.yaml" and (path.parent / "web").is_dir():
             directories.add(path.parent)
     return sorted(directories, key=lambda path: path.relative_to(target).as_posix())
 
 
-def _find_built_web(target: Path) -> list[Path]:
+def _find_built_web(target: Path, deadline: float) -> list[Path]:
     roots: set[Path] = set()
-    for path in _walk_files(target):
+    for path in _walk_files(target, deadline):
         if path.name != "index.html":
             continue
         relative_parent = path.parent.relative_to(target)
@@ -257,8 +282,10 @@ def _remaining(deadline: float, maximum: float) -> float:
     return min(remaining, maximum)
 
 
-def _wait_server(port: int, deadline: float) -> None:
+def _wait_server(server: subprocess.Popen[bytes], port: int, deadline: float) -> None:
     while time.monotonic() < deadline:
+        if server.poll() is not None:
+            raise RuntimeError("local web server exited before readiness")
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.2):
                 return
@@ -267,21 +294,83 @@ def _wait_server(port: int, deadline: float) -> None:
     raise TimeoutError("local web server did not start")
 
 
+def _require_http_ok(server: subprocess.Popen[bytes], port: int, deadline: float) -> None:
+    if server.poll() is not None:
+        raise RuntimeError("local web server exited before HTTP probe")
+    connection = http.client.HTTPConnection(
+        "127.0.0.1",
+        port,
+        timeout=_remaining(deadline, 5),
+    )
+    try:
+        connection.request("GET", "/")
+        response = connection.getresponse()
+        response.read(1)
+        if response.status != 200:
+            raise RuntimeError("local web server root did not return HTTP 200")
+    finally:
+        connection.close()
+    if server.poll() is not None:
+        raise RuntimeError("local web server exited after HTTP probe")
+
+
+def _stop_server(server: subprocess.Popen[bytes]) -> None:
+    if server.poll() is None:
+        server.terminate()
+        try:
+            server.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait(timeout=5)
+
+
+def _start_server(web_root: Path, deadline: float) -> tuple[subprocess.Popen[bytes], int]:
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = int(probe.getsockname()[1])
+        server = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "http.server",
+                str(port),
+                "--bind",
+                "127.0.0.1",
+                "--directory",
+                str(web_root),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            _wait_server(
+                server,
+                port,
+                time.monotonic() + _remaining(deadline, 10),
+            )
+            _require_http_ok(server, port, deadline)
+            return server, port
+        except (
+            OSError,
+            RuntimeError,
+            TimeoutError,
+            http.client.HTTPException,
+        ) as error:
+            last_error = error
+            log(f"capture web server attempt {attempt} failed")
+            _stop_server(server)
+    raise RuntimeError("local web server failed after 3 attempts") from last_error
+
+
 def _capture_web_root(
     web_root: Path, destination: Path, deadline: float
 ) -> tuple[str, list[Path]]:
     if not NODE.is_file() or not CHROME.is_file() or not PLAYWRIGHT.is_dir():
         raise RuntimeError("browser capture toolchain unavailable")
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = int(probe.getsockname()[1])
-    server = subprocess.Popen(
-        [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1", "--directory", str(web_root)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    server, port = _start_server(web_root, deadline)
     try:
-        _wait_server(port, time.monotonic() + _remaining(deadline, 10))
         with tempfile.TemporaryDirectory(prefix="appkit-pro-web-") as temporary:
             result = subprocess.run(
                 [str(NODE), "-e", NODE_CAPTURE_SCRIPT, str(PLAYWRIGHT), f"http://127.0.0.1:{port}/", temporary, str(CHROME)],
@@ -308,12 +397,7 @@ def _capture_web_root(
                 outputs.append(output)
             return str(web_root), outputs
     finally:
-        server.terminate()
-        try:
-            server.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            server.kill()
-            server.wait(timeout=5)
+        _stop_server(server)
 
 
 def _capture_web(
@@ -321,7 +405,7 @@ def _capture_web(
 ) -> tuple[str, list[Path]] | None:
     log("capture ladder attempt: web capture")
     flutter = Path("/usr/local/bin/flutter")
-    for app in _find_flutter_dirs(target)[:8]:
+    for app in _find_flutter_dirs(target, deadline)[:8]:
         log("capture web attempt: Flutter release build")
         if not flutter.is_file():
             warnings.append("Flutter app found but /usr/local/bin/flutter is unavailable")
@@ -342,7 +426,7 @@ def _capture_web(
         except (OSError, RuntimeError, subprocess.SubprocessError, TimeoutError, json.JSONDecodeError):
             warnings.append("Flutter web build or capture failed")
             log("capture web Flutter attempt failed")
-    for web_root in _find_built_web(target)[:8]:
+    for web_root in _find_built_web(target, deadline)[:8]:
         log("capture web attempt: existing built web surface")
         try:
             return _capture_web_root(web_root, destination, deadline)
@@ -367,7 +451,27 @@ def _capture_synthetic(
     return str(target), outputs
 
 
-def _report(ladder: str, source: str, warnings: list[str], shots: list[Path]) -> dict[str, object]:
+def _sanitize_source(source: str, target: Path) -> str:
+    rendered = "".join(
+        char for char in source if not unicodedata.category(char).startswith("C")
+    )
+    rendered = unicodedata.normalize("NFC", rendered)
+    if "://" not in rendered:
+        try:
+            path = Path(rendered).resolve(strict=False)
+            rendered = path.relative_to(target).as_posix()
+        except (OSError, ValueError):
+            pass
+    return unicodedata.normalize("NFC", rendered[:4096]) or "."
+
+
+def _report(
+    ladder: str,
+    source: str,
+    warnings: list[str],
+    shots: list[Path],
+    target: Path,
+) -> dict[str, object]:
     records: list[dict[str, object]] = []
     for shot in shots:
         with Image.open(shot) as image:
@@ -383,11 +487,11 @@ def _report(ladder: str, source: str, warnings: list[str], shots: list[Path]) ->
     report = {
         "ladder": ladder,
         "shots": records,
-        "source": source,
+        "source": _sanitize_source(source, target),
         "warnings": warnings,
     }
     pro_inputs.atomic_write_text(
-        pro_inputs.DATA_ROOT / pro_inputs.REPORT_FILE,
+        pro_inputs.data_root() / pro_inputs.REPORT_FILE,
         canonical_json(report) + "\n",
     )
     return report
@@ -401,7 +505,7 @@ def main() -> None:
         pro_inputs.require_rationale()
         destination = _reset_screens_dir()
         warnings: list[str] = []
-        exported = _capture_exports(target, destination)
+        exported = _capture_exports(target, destination, deadline)
         if exported is not None:
             ladder = "exported"
             source, shots = exported
@@ -413,7 +517,7 @@ def main() -> None:
             else:
                 ladder = "synthetic"
                 source, shots = _capture_synthetic(target, destination, values, warnings)
-        report = _report(ladder, source, warnings, shots)
+        report = _report(ladder, source, warnings, shots, target)
         digests = {
             str(item["file"]): str(item["sha256"])
             for item in report["shots"]

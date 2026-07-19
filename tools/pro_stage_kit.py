@@ -15,6 +15,7 @@ from stage_support import (
     emit_result,
     failure_summary,
     log,
+    prepare_output_tree,
     safe_output_path,
 )
 
@@ -23,6 +24,8 @@ def main() -> None:
     try:
         values = pro_inputs.load_order()
         report = pro_inputs.load_capture_report()
+        prepare_output_tree()
+        context = stage_kit._load_context()
 
         def screenshot_builder(current: dict[str, object]) -> list[Path]:
             real_framed = pro_compose.build_framed(current, report)
@@ -52,7 +55,7 @@ def main() -> None:
             "implemented",
             stage_kit.run_kit(
                 values,
-                stage_kit._load_context(),
+                context,
                 stage_ids=("compose-real", "content"),
                 screenshot_builder=screenshot_builder,
                 expected_groups={
