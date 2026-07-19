@@ -8,6 +8,7 @@ LIVE_DATA_ROOT=/root/appkit-pro-data
 HOME_ROOT=/root/appkit-pro-e2e-home
 FULL="$FIXTURE_ROOT/fixture-full"
 BARE="$FIXTURE_ROOT/fixture-bare"
+DECOY="$FIXTURE_ROOT/fixture-decoy"
 
 fail() {
   printf '%s\n' "pro_e2e: $*" >&2
@@ -64,7 +65,11 @@ require_writable_e2e_root "$HOME_ROOT"
 require_writable_e2e_root "$DATA_ROOT"
 rm -rf "$FIXTURE_ROOT" "$HOME_ROOT" "$DATA_ROOT"
 mkdir -p "$FIXTURE_ROOT" || fail "cannot create $FIXTURE_ROOT (the coordinator needs a writable /root fixture grant)"
-mkdir -p "$FULL/docs/store/screenshots/en" "$FULL/lib/theme" "$BARE/docs/store/screenshots/en" "$BARE/lib/theme" "$DATA_ROOT"
+mkdir -p \
+  "$FULL/docs/store/screenshots/en" "$FULL/lib/theme" \
+  "$BARE/docs/store/screenshots/en" "$BARE/lib/theme" \
+  "$DECOY/docs/store/screenshots/en" "$DECOY/lib/theme" \
+  "$DATA_ROOT"
 
 make_fixture_files() {
   fixture=$1
@@ -88,7 +93,9 @@ EOF
 
 make_fixture_files "$FULL"
 make_fixture_files "$BARE"
+make_fixture_files "$DECOY"
 : > "$BARE/docs/store/screenshots/en/.gitkeep"
+: > "$DECOY/docs/store/screenshots/en/.gitkeep"
 
 python3 - "$FULL/docs/store/screenshots/en" <<'PY'
 from pathlib import Path
@@ -110,13 +117,60 @@ for index, base in enumerate(((31, 162, 255), (20, 184, 166)), start=1):
     image.save(root / f"fixture_{index}.png", format="PNG", optimize=True)
 PY
 
-for fixture in "$FULL" "$BARE"; do
+for fixture in "$FULL" "$BARE" "$DECOY"; do
   git -C "$fixture" init -q
   git -C "$fixture" config user.name appkit-pro-e2e
   git -C "$fixture" config user.email appkit-pro-e2e@example.invalid
   git -C "$fixture" add .
   git -C "$fixture" commit -qm fixture
 done
+
+DECOY_REPO="$DECOY/repos/decoy-app"
+DECOY_SCREEN="$DECOY_REPO/fastlane/metadata/en-US/screenshots/decoy_1.png"
+mkdir -p "$(dirname "$DECOY_SCREEN")"
+git -C "$DECOY_REPO" init -q
+python3 - "$DECOY_SCREEN" "$FIXTURE_ROOT/decoy-digests.json" "$REPO/tools" <<'PY'
+from pathlib import Path
+import hashlib, json, sys, tempfile
+from PIL import Image, ImageDraw
+
+screen = Path(sys.argv[1])
+digest_path = Path(sys.argv[2])
+sys.path.insert(0, sys.argv[3])
+import pro_capture
+
+image = Image.new("RGB", (800, 1600), (52, 31, 84))
+draw = ImageDraw.Draw(image)
+for y in range(1600):
+    draw.line(
+        (0, y, 799, y),
+        fill=((y * 37) % 256, (y * 71 + 19) % 256, (y * 109 + 7) % 256),
+    )
+for x in range(0, 800, 7):
+    draw.line(
+        (x, 0, x, 1599),
+        fill=((x * 13) % 256, (x * 29 + 5) % 256, (x * 47 + 11) % 256),
+        width=2,
+    )
+for row in range(12):
+    top = 60 + row * 125
+    color = (245 - row * 4, 225 - row * 3, 255 - row * 2)
+    draw.rounded_rectangle((54, top, 746, top + 82), radius=24, fill=color)
+image.save(screen, format="PNG", optimize=True)
+if screen.stat().st_size <= pro_capture.MIN_EXPORT_BYTES:
+    raise SystemExit("decoy fixture did not satisfy the export size threshold")
+with tempfile.TemporaryDirectory(prefix="appkit-pro-decoy-") as temporary:
+    normalized = Path(temporary) / "normalized.png"
+    pro_capture._save_normalized(screen, normalized)
+    digests = {
+        "normalized_sha256": hashlib.sha256(normalized.read_bytes()).hexdigest(),
+        "raw_sha256": hashlib.sha256(screen.read_bytes()).hexdigest(),
+    }
+digest_path.write_text(
+    json.dumps(digests, separators=(",", ":"), sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
 
 mkdir -p "$HOME_ROOT"
 gitmoot repo add gitmoot/appkit-demo --path "$REPO" --home "$HOME_ROOT" >/dev/null
@@ -185,7 +239,8 @@ verify_persisted_kit() {
   run_json=$1
   expected=$2
   digest_file=$3
-  python3 - "$run_json" "$DATA_ROOT" "$expected" "$digest_file" <<'PY'
+  decoy_digests=${4-}
+  python3 - "$run_json" "$DATA_ROOT" "$expected" "$digest_file" "$decoy_digests" <<'PY'
 import hashlib, json, os, stat, sys, zipfile
 from pathlib import Path
 
@@ -193,6 +248,7 @@ run = json.load(open(sys.argv[1], encoding="utf-8"))
 data_root = Path(sys.argv[2])
 expected = sys.argv[3]
 digest_file = Path(sys.argv[4])
+decoy_digest_path = Path(sys.argv[5]) if sys.argv[5] else None
 kit = data_root / "kit"
 by_id = {stage["id"]: stage for stage in run["stages"]}
 stage = by_id.get("kit")
@@ -248,8 +304,23 @@ for record in artifact_records:
         raise SystemExit(f"persisted artifact mismatch: {record['path']}")
 
 report = json.load((data_root / "capture-report.json").open(encoding="utf-8"))
-if report["ladder"] != expected:
+if expected == "not-exported":
+    if report["ladder"] == "exported":
+        raise SystemExit("nested-repository decoy was incorrectly exported")
+elif report["ladder"] != expected:
     raise SystemExit(f"ladder={report['ladder']}, expected={expected}")
+if decoy_digest_path is not None:
+    decoy_digests = set(json.load(decoy_digest_path.open(encoding="utf-8")).values())
+    observed_shots = {item["sha256"] for item in report["shots"]}
+    persisted_screenshots = {
+        item["sha256"]
+        for item in artifact_records
+        if item["path"].startswith("screenshots/")
+    }
+    if observed_shots.intersection(decoy_digests):
+        raise SystemExit("capture report contains the nested-repository decoy digest")
+    if persisted_screenshots.intersection(decoy_digests):
+        raise SystemExit("persisted screenshots contain the nested-repository decoy digest")
 with zipfile.ZipFile(zip_path) as archive:
     names = set(archive.namelist())
     if names != artifact_paths | {"manifest.json"}:
@@ -264,13 +335,15 @@ with zipfile.ZipFile(zip_path) as archive:
             raise SystemExit(f"zip member differs from persisted file: {name}")
 if kit_report != report:
     raise SystemExit("kit capture report differs from observed report")
-if expected == "exported":
+if report["ladder"] == "exported":
     if manifest.get("warnings") != [] or "Captured from " not in readme:
         raise SystemExit("exported provenance missing")
-else:
+elif report["ladder"] == "synthetic":
     warning = "synthetic screens: no exported screenshots found and web capture unavailable/failed"
     if warning not in manifest.get("warnings", []) or "Synthesized deterministically" not in readme:
         raise SystemExit("synthetic warning/provenance missing")
+elif "Captured from " not in readme:
+    raise SystemExit("web-capture provenance missing")
 digest_file.write_text(actual_zip_sha + "\n", encoding="ascii")
 PY
 }
@@ -279,6 +352,7 @@ run_case() {
   expected=$1
   target=$2
   digest_file=$3
+  decoy_digests=${4-}
   printf '%s\n' "$target" > "$DATA_ROOT/target"
   rm -f "$DATA_ROOT/order.yaml" "$DATA_ROOT/rationale.md" "$DATA_ROOT/capture-report.json"
   rm -rf "$DATA_ROOT/screens"
@@ -287,16 +361,38 @@ run_case() {
   run_id=$(gitmoot pipeline run appkit-pro --home "$HOME_ROOT")
   run_json="$HOME_ROOT/$expected-run.json"
   wait_run "$run_id" "$run_json"
-  verify_persisted_kit "$run_json" "$expected" "$digest_file"
+  verify_persisted_kit "$run_json" "$expected" "$digest_file" "$decoy_digests"
 }
 
 first_digest_file=$HOME_ROOT/exported-persisted.sha256
 second_digest_file=$HOME_ROOT/synthetic-persisted.sha256
+decoy_digest_file=$HOME_ROOT/decoy-persisted.sha256
 run_case exported "$FULL" "$first_digest_file"
 run_case synthetic "$BARE" "$second_digest_file"
+run_case not-exported "$DECOY" "$decoy_digest_file" "$FIXTURE_ROOT/decoy-digests.json"
 first_digest=$(cat "$first_digest_file")
 second_digest=$(cat "$second_digest_file")
+decoy_digest=$(cat "$decoy_digest_file")
 [ "$first_digest" != "$second_digest" ] || fail "second run did not overwrite the first persisted kit"
+
+decoy_capture_stdout=$HOME_ROOT/decoy-capture.stdout
+decoy_capture_stderr=$HOME_ROOT/decoy-capture.stderr
+python3 "$REPO/tools/pro_capture.py" >"$decoy_capture_stdout" 2>"$decoy_capture_stderr"
+python3 - "$decoy_capture_stdout" <<'PY'
+import json, sys
+
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+if len(lines) != 1:
+    raise SystemExit("decoy capture stdout did not contain exactly one result line")
+result = json.loads(lines[0])["gitmoot_result"]
+summary = json.loads(result["summary"])
+if result["decision"] != "implemented" or summary.get("ladder") == "exported":
+    raise SystemExit("standalone decoy capture selected the nested-repository export")
+PY
+grep -F 'capture scan boundary excluded: repos/decoy-app (nested-repository)' "$decoy_capture_stderr" >/dev/null || {
+  cat "$decoy_capture_stderr" >&2
+  fail "decoy capture log did not record the nested-repository boundary"
+}
 
 expose_log=$HOME_ROOT/expose-rejection.log
 if gitmoot pipeline expose --schema "$REPO/schema.json" --home "$HOME_ROOT" appkit-pro >"$expose_log" 2>&1; then
@@ -317,4 +413,5 @@ live_after=$(snapshot_live_root)
 [ "$live_before" = "$live_after" ] || fail "live $LIVE_DATA_ROOT changed during E2E"
 printf '%s\n' "pro_e2e: live root unchanged $live_after"
 printf '%s\n' "pro_e2e: persisted exported=$first_digest synthetic=$second_digest (overwrite confirmed)"
-printf '%s\n' 'pro_e2e: fixture-full exported, fixture-bare synthetic, persistence verified, expose rejected, public determinism matched'
+printf '%s\n' "pro_e2e: decoy non-exported=$decoy_digest; nested decoy digests absent; boundary log present"
+printf '%s\n' 'pro_e2e: fixture-full exported, fixture-bare synthetic, fixture-decoy non-exported, persistence verified, expose rejected, public determinism matched'

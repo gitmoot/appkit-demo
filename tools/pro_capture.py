@@ -32,6 +32,9 @@ MAX_EXPORT_PIXELS = 100_000_000
 NODE = Path("/usr/bin/node")
 CHROME = Path("/usr/bin/google-chrome")
 PLAYWRIGHT = Path("/root/vetrina/node_modules/playwright-core")
+EXPORT_JUNK_DIRECTORIES = frozenset(
+    ("build", "coverage", "deriveddata", "dist", "out", "target")
+)
 
 
 NODE_CAPTURE_SCRIPT = r"""
@@ -152,30 +155,92 @@ def _save_normalized(source: Path, destination: Path) -> None:
     destination.write_bytes(frame_compose.png_bytes(normalized))
 
 
-def _is_export_location(relative: Path) -> bool:
-    parts = tuple(part.casefold() for part in relative.parts)
-    if len(parts) >= 3 and parts[:3] == ("docs", "store", "screenshots"):
-        return True
-    if parts and parts[0] in ("store", "marketing"):
-        return True
-    for index, part in enumerate(parts):
-        if part == "fastlane" and "screenshots" in parts[index + 1 :]:
-            return True
-    return False
+def _export_location_rank(relative: Path) -> int | None:
+    """Prefer standard app-owned export layouts over legacy fastlane layouts."""
+
+    directories = tuple(part.casefold() for part in relative.parts[:-1])
+    if len(directories) >= 3 and directories[:3] == (
+        "docs",
+        "store",
+        "screenshots",
+    ):
+        return 0
+    if directories and directories[0] in ("screenshots", "store", "marketing"):
+        return 0
+    for index, part in enumerate(directories):
+        if part != "fastlane":
+            continue
+        remainder = directories[index + 1 :]
+        if (
+            remainder
+            and remainder[0] == "metadata"
+            and any(item.startswith("screenshot") for item in remainder[1:])
+        ):
+            return 0
+        if "screenshots" in remainder:
+            return 1
+    return None
 
 
-def _walk_files(root: Path, deadline: float | None = None) -> list[Path]:
+def _contains_git_entry(directory: Path) -> bool:
+    try:
+        (directory / ".git").lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        # An unreadable repository marker is still a boundary; fail closed.
+        return True
+    return True
+
+
+def _directory_boundary(
+    directory: Path,
+    name: str,
+    *,
+    exclude_build_outputs: bool,
+) -> str | None:
+    child = directory / name
+    folded = name.casefold()
+    if child.is_symlink():
+        return "symlink"
+    if name.startswith("."):
+        return "hidden"
+    if folded == "node_modules":
+        return "node_modules"
+    if _contains_git_entry(child):
+        return "nested-repository"
+    if exclude_build_outputs and folded in EXPORT_JUNK_DIRECTORIES:
+        return "export-junk"
+    return None
+
+
+def _walk_files(
+    root: Path,
+    deadline: float | None = None,
+    *,
+    exclude_build_outputs: bool = False,
+    log_boundaries: bool = False,
+) -> list[Path]:
     result: list[Path] = []
     for directory, dir_names, file_names in os.walk(root, followlinks=False):
         if deadline is not None and time.monotonic() >= deadline:
             log("capture scan deadline reached")
             break
-        dir_names[:] = sorted(
-            name
-            for name in dir_names
-            if name not in (".git", "node_modules")
-            and not (Path(directory) / name).is_symlink()
-        )
+        kept: list[str] = []
+        directory_path = Path(directory)
+        for name in sorted(dir_names):
+            reason = _directory_boundary(
+                directory_path,
+                name,
+                exclude_build_outputs=exclude_build_outputs,
+            )
+            if reason is None:
+                kept.append(name)
+                continue
+            if log_boundaries:
+                relative = (directory_path / name).relative_to(root).as_posix()
+                log(f"capture scan boundary excluded: {relative} ({reason})")
+        dir_names[:] = kept
         for name in sorted(file_names):
             if deadline is not None and time.monotonic() >= deadline:
                 log("capture scan deadline reached")
@@ -188,11 +253,17 @@ def _walk_files(root: Path, deadline: float | None = None) -> list[Path]:
 
 def _export_candidates(target: Path, deadline: float) -> list[Path]:
     candidates: list[Path] = []
-    for path in _walk_files(target, deadline):
+    for path in _walk_files(
+        target,
+        deadline,
+        exclude_build_outputs=True,
+        log_boundaries=True,
+    ):
         if time.monotonic() >= deadline:
             break
         relative = path.relative_to(target)
-        if not _is_export_location(relative) or path.suffix.casefold() not in (".png", ".jpg", ".jpeg"):
+        location_rank = _export_location_rank(relative)
+        if location_rank is None or path.suffix.casefold() not in (".png", ".jpg", ".jpeg"):
             continue
         try:
             if path.stat().st_size <= MIN_EXPORT_BYTES:
@@ -210,11 +281,19 @@ def _export_candidates(target: Path, deadline: float) -> list[Path]:
             continue
         candidates.append(path)
 
-    def key(path: Path) -> tuple[int, str]:
+    def key(path: Path) -> tuple[int, int, int, str]:
         relative = path.relative_to(target)
         locale_parts = {part.casefold().replace("_", "-") for part in relative.parts[:-1]}
         preferred = bool(locale_parts.intersection(("en", "en-us", "en-gb")))
-        return (0 if preferred else 1, relative.as_posix())
+        location_rank = _export_location_rank(relative)
+        if location_rank is None:
+            raise RuntimeError("unranked export candidate")
+        return (
+            location_rank,
+            len(relative.parts) - 1,
+            0 if preferred else 1,
+            relative.as_posix(),
+        )
 
     return sorted(candidates, key=key)[:3]
 
@@ -257,7 +336,7 @@ def _capture_exports(
 
 def _find_flutter_dirs(target: Path, deadline: float) -> list[Path]:
     directories: set[Path] = set()
-    for path in _walk_files(target, deadline):
+    for path in _walk_files(target, deadline, log_boundaries=False):
         if path.name == "pubspec.yaml" and (path.parent / "web").is_dir():
             directories.add(path.parent)
     return sorted(directories, key=lambda path: path.relative_to(target).as_posix())
@@ -265,7 +344,7 @@ def _find_flutter_dirs(target: Path, deadline: float) -> list[Path]:
 
 def _find_built_web(target: Path, deadline: float) -> list[Path]:
     roots: set[Path] = set()
-    for path in _walk_files(target, deadline):
+    for path in _walk_files(target, deadline, log_boundaries=False):
         if path.name != "index.html":
             continue
         relative_parent = path.parent.relative_to(target)
