@@ -8,20 +8,18 @@ import shutil
 import stat
 from pathlib import Path
 
-import frame_compose
-import pro_compose
+import pro_assemble
+import pro_content_handoff
 import pro_handoff
 import pro_inputs
 import render
 import stage_kit
 from stage_support import (
-    canonical_json,
     emit_result,
     failure_summary,
     log,
     inspect_output_tree,
     prepare_output_tree,
-    safe_output_path,
     sha256_file,
 )
 
@@ -157,41 +155,34 @@ def main() -> None:
         report = pro_inputs.load_capture_report()
         prepare_output_tree()
         context = stage_kit._load_context()
-        framed, device_pngs, handoff_digests = pro_handoff.load_assets(
+        framed, device_pngs, framed_digests = pro_handoff.load_assets(
             values, report
         )
-        framed_pngs = {
-            index: frame_compose.png_bytes(framed[index])
-            for index in sorted(framed)
-        }
+        content_payloads, content_digests = pro_content_handoff.load_assets(values)
         count = len(framed)
+        handoff_digests = dict(framed_digests)
+        if set(handoff_digests).intersection(content_digests):
+            raise stage_kit.VerificationError("kit_digest_overlap")
+        handoff_digests.update(content_digests)
 
-        def screenshot_builder(current: dict[str, object]) -> list[Path]:
-            return pro_compose.render_screenshots(current, framed_pngs)
-
-        def enrich(upstream_paths: list[Path]) -> list[Path]:
-            report_path = safe_output_path("out/capture-report.json")
-            report_path.write_text(
-                canonical_json(report) + "\n",
-                encoding="utf-8",
-                newline="\n",
+        def artifact_builder(current: dict[str, object]) -> list[Path]:
+            return pro_assemble.assemble(
+                current,
+                report,
+                framed,
+                device_pngs,
+                content_payloads,
+                framed_digests,
+                content_digests,
             )
-            return upstream_paths + [report_path]
 
         summary = stage_kit.run_kit(
             values,
             context,
-            stage_ids=("compose-real", "content"),
-            screenshot_builder=screenshot_builder,
+            stage_ids=("landing",),
             expected_groups={
-                "compose-real": pro_compose.expected_screenshot_relpaths(
-                    values, count
-                )
-                + pro_handoff.expected_digest_keys(count),
-                "content": render.expected_content_relpaths(values, count)
-                + pro_handoff.expected_digest_keys(count),
+                "landing": pro_assemble.expected_digest_keys(values, count),
             },
-            enrich=enrich,
             manifest_warnings=(
                 list(report["warnings"])
                 if report["ladder"] == "synthetic"
@@ -201,16 +192,11 @@ def main() -> None:
                 "counts": report["counts"],
                 "ladder": report["ladder"],
             },
-            render_assets=(framed, device_pngs),
-            render_options={
-                "embed_devices": True,
-                "provenance": pro_compose.provenance(report),
-            },
             extra_identity_digests=handoff_digests,
             upstream_summary_extras={
-                "compose-real": {"counts", "persisted"},
-                "content": {"counts"},
+                "landing": {"counts"},
             },
+            artifact_builder=artifact_builder,
         )
         zip_digest = summary["digests"]["out/launch-kit.zip"]
         if not isinstance(zip_digest, str):

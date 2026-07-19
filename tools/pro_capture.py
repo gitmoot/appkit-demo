@@ -730,6 +730,7 @@ def _report(
 
 def main() -> None:
     try:
+        pro_inputs.require_spec_stamp()
         deadline = time.monotonic() + MAX_CAPTURE_SECONDS
         target = pro_inputs.load_target()
         values = pro_inputs.load_order()
@@ -762,6 +763,9 @@ def main() -> None:
                 "v": 1,
             },
         )
+    except pro_inputs.StaleSpecError as error:
+        log(str(error))
+        emit_result("failed", failure_summary(str(error)))
     except Exception as error:
         log(f"capture failed: {type(error).__name__}")
         emit_result("failed", failure_summary("capture_error"))

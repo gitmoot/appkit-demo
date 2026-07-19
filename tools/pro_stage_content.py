@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
-"""Appkit-pro stage: render derived content through the public generator."""
+"""Appkit-pro parallel branch: persist copy, legal sources, and icons."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import frame_compose
-import pro_compose
-import pro_handoff
+import pro_content_handoff
 import pro_inputs
 import render
 from stage_support import (
-    artifact_identity,
     emit_result,
     failure_summary,
-    identity_digests,
     log,
     prepare_output_tree,
     success_summary,
@@ -23,23 +20,12 @@ from stage_support import (
 
 def run_content(values: dict[str, object]) -> dict[str, object]:
     frame_compose.verify_assets()
-    report = pro_inputs.load_capture_report()
     prepare_output_tree()
-    framed, device_pngs, handoff_digests = pro_handoff.load_assets(values, report)
-    outputs = render.render_all(
-        values,
-        framed,
-        device_pngs,
-        provenance=pro_compose.provenance(report),
-        embed_devices=True,
+    render.render_content_handoff(values)
+    digests, persisted = pro_content_handoff.persist_assets(
+        values, Path.cwd() / "out"
     )
-    for index in sorted(device_pngs):
-        output = Path.cwd() / f"out/landing/assets/device_{index}.png"
-        if artifact_identity(output) != handoff_digests[f"framed/device_{index}.png"]:
-            raise pro_handoff.HandoffError("landing device differs from handoff")
-    digests = identity_digests(outputs, Path.cwd())
-    digests.update(handoff_digests)
-    return success_summary(values, digests, counts=report["counts"])
+    return success_summary(values, digests, persisted=persisted)
 
 
 def main() -> None:

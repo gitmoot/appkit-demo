@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -27,11 +28,13 @@ def main() -> None:
     target = pro_inputs.load_target()
     data_root = pro_inputs.data_root()
     template = _read(TEMPLATE)
+    template_sha256 = hashlib.sha256(TEMPLATE.read_bytes()).hexdigest()
     prompt = _read(PROMPT).rstrip("\n")
     if (
         template.count("__DATA_ROOT__") != 1
         or template.count("__TARGET_REPO__") != 1
         or template.count("__DERIVE_PROMPT__") != 1
+        or template.count("__SPEC_SHA256__") != 1
         or prompt.count("__DATA_ROOT__") != 2
         or prompt.count("__TARGET_REPO__") != 1
     ):
@@ -42,12 +45,17 @@ def main() -> None:
     rendered = template.replace("__TARGET_REPO__", json.dumps(str(target)))
     rendered = rendered.replace("__DATA_ROOT__", json.dumps(str(data_root)))
     rendered = rendered.replace("__DERIVE_PROMPT__", prompt_block)
+    rendered = rendered.replace("__SPEC_SHA256__", template_sha256)
     temporary = OUTPUT.with_name(OUTPUT.name + ".tmp")
     if OUTPUT.is_symlink() or temporary.is_symlink():
         raise RuntimeError("pipeline output path is unsafe")
     temporary.write_text(rendered, encoding="utf-8", newline="\n")
     os.chmod(temporary, 0o600)
     temporary.replace(OUTPUT)
+    pro_inputs.atomic_write_text(
+        data_root / pro_inputs.SPEC_STAMP_FILE,
+        template_sha256 + "\n",
+    )
     print(str(OUTPUT))
 
 

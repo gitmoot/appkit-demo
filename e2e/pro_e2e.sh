@@ -183,8 +183,21 @@ gitmoot agent start appkit-deriver \
   --capability produce \
   --model gpt-5.6-sol \
   --policy workspace-write >/dev/null
-gitmoot daemon start --home "$HOME_ROOT" --poll 1s >/dev/null
-trap 'gitmoot daemon stop --home "$HOME_ROOT" >/dev/null 2>&1 || true' EXIT HUP INT TERM
+PARALLEL_SUPPORTED=0
+if gitmoot daemon start --help 2>&1 | grep -q -- '-workers'; then
+  gitmoot daemon start --home "$HOME_ROOT" --poll 1s --parallel 2 >/dev/null
+  PARALLEL_SUPPORTED=1
+else
+  gitmoot daemon start --home "$HOME_ROOT" --poll 1s >/dev/null
+fi
+TEMPLATE_BACKUP=''
+cleanup() {
+  if [ -n "$TEMPLATE_BACKUP" ] && [ -f "$TEMPLATE_BACKUP" ]; then
+    cp -p "$TEMPLATE_BACKUP" "$REPO/templates/appkit-pro.yaml.tmpl"
+  fi
+  gitmoot daemon stop --home "$HOME_ROOT" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT HUP INT TERM
 
 add_pipeline() {
   add_log=$HOME_ROOT/pipeline-add.log
@@ -198,6 +211,87 @@ add_pipeline() {
   fi
   cat "$add_log" >&2
   fail "pipeline add failed"
+}
+
+verify_generated_dag() {
+  python3 - "$REPO/appkit-pro.yaml" "$DATA_ROOT/spec-stamp" "$REPO/templates/appkit-pro.yaml.tmpl" <<'PY'
+import hashlib, re, sys
+from pathlib import Path
+
+spec_path, stamp_path, template_path = map(Path, sys.argv[1:])
+spec = spec_path.read_text(encoding="utf-8")
+needs = {}
+current = None
+for line in spec.splitlines():
+    match = re.fullmatch(r"  - id: ([a-z][a-z0-9-]*)", line)
+    if match:
+        current = match.group(1)
+        needs[current] = []
+        continue
+    match = re.fullmatch(r"    needs: \[([^]]*)\]", line)
+    if match and current:
+        needs[current] = [item.strip() for item in match.group(1).split(",") if item.strip()]
+expected = {
+    "derive": [],
+    "capture": ["derive"],
+    "compose-real": ["capture", "derive"],
+    "content": ["derive"],
+    "landing": ["content", "compose-real"],
+    "kit": ["landing"],
+}
+if needs != expected:
+    raise SystemExit(f"generated DAG mismatch: {needs}")
+template_sha = hashlib.sha256(template_path.read_bytes()).hexdigest()
+stamp = stamp_path.read_text(encoding="ascii").strip()
+if stamp != template_sha or f"# template_sha256: {template_sha}" not in spec:
+    raise SystemExit("generated spec stamp mismatch")
+PY
+}
+
+record_concurrency() {
+  run_json=$1
+  python3 - "$run_json" "$HOME_ROOT/concurrency-evidence" "$PARALLEL_SUPPORTED" <<'PY'
+import datetime as dt
+import json, sys
+
+run = json.load(open(sys.argv[1], encoding="utf-8"))
+output = sys.argv[2]
+parallel_supported = sys.argv[3] == "1"
+by_id = {stage["id"]: stage for stage in run["stages"]}
+
+def timestamp(stage, names):
+    for name in names:
+        value = stage.get(name)
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str) and value:
+            candidate = value.replace("Z", "+00:00")
+            try:
+                return dt.datetime.fromisoformat(candidate).timestamp()
+            except ValueError:
+                continue
+    return None
+
+capture = by_id["capture"]
+content = by_id["content"]
+capture_start = timestamp(capture, ("started_at", "start_time", "started"))
+capture_end = timestamp(capture, ("finished_at", "completed_at", "end_time", "ended"))
+content_start = timestamp(content, ("started_at", "start_time", "started"))
+content_end = timestamp(content, ("finished_at", "completed_at", "end_time", "ended"))
+if None in (capture_start, capture_end, content_start, content_end):
+    if parallel_supported:
+        raise SystemExit("parallel daemon run omitted stage timestamps")
+    line = "edge-only: daemon exposes no parallel worker flag\n"
+else:
+    overlap = capture_start < content_end and content_start < capture_end
+    line = (
+        f"overlap={'true' if overlap else 'false'} "
+        f"capture={capture_start:.6f}..{capture_end:.6f} "
+        f"content={content_start:.6f}..{content_end:.6f}\n"
+    )
+with open(output, "a", encoding="utf-8") as handle:
+    handle.write(line)
+PY
 }
 
 wait_run() {
@@ -339,6 +433,38 @@ handoff_by_path = {item["path"]: item for item in handoff_manifest["artifacts"]}
 if handoff_manifest.get("counts") != expected_counts:
     raise SystemExit("framed handoff counts mismatch")
 
+content_root = data_root / "content"
+content_manifest_path = content_root / "manifest.json"
+if not content_manifest_path.is_file() or content_manifest_path.is_symlink():
+    raise SystemExit("content handoff manifest is missing or unsafe")
+content_manifest = json.load(content_manifest_path.open(encoding="utf-8"))
+content_records = content_manifest.get("artifacts")
+if not isinstance(content_records, list) or not content_records:
+    raise SystemExit("content handoff artifacts are invalid")
+content_names = {item["path"] for item in content_records}
+actual_content_files = set()
+for root, directories, files in os.walk(content_root, followlinks=False):
+    directories.sort()
+    files.sort()
+    root_path = Path(root)
+    for name in directories:
+        if (root_path / name).is_symlink():
+            raise SystemExit("content handoff contains a directory symlink")
+    for name in files:
+        path = root_path / name
+        if not stat.S_ISREG(path.lstat().st_mode):
+            raise SystemExit("content handoff contains a non-regular file")
+        actual_content_files.add(path.relative_to(content_root).as_posix())
+if actual_content_files != content_names | {"manifest.json"}:
+    raise SystemExit("content handoff tree mismatch")
+for record in content_records:
+    source = content_root / record["path"]
+    data = source.read_bytes()
+    if len(data) != record["bytes"] or hashlib.sha256(data).hexdigest() != record["sha256"]:
+        raise SystemExit(f"content handoff artifact mismatch: {record['path']}")
+    if data != (kit / record["path"]).read_bytes():
+        raise SystemExit(f"final kit did not use content handoff: {record['path']}")
+
 manifest_paths = {item["path"] for item in artifact_records}
 expected_devices = {f"landing/assets/device_{index}.png" for index in range(1, expected_count + 1)}
 actual_devices = {path for path in manifest_paths if path.startswith("landing/assets/device_")}
@@ -375,12 +501,31 @@ for index in range(1, expected_count + 1):
 
 compose_summary = json.loads(by_id["compose-real"]["summary"])
 content_summary = json.loads(by_id["content"]["summary"])
+landing_summary = json.loads(by_id["landing"]["summary"])
 handoff_keys = {f"framed/{name}" for name in expected_framed}
 for key in handoff_keys:
-    if compose_summary["digests"].get(key) != content_summary["digests"].get(key):
-        raise SystemExit(f"compose/content handoff digest mismatch: {key}")
-if compose_summary.get("counts") != expected_counts or content_summary.get("counts") != expected_counts:
+    if compose_summary["digests"].get(key) != landing_summary["digests"].get(key):
+        raise SystemExit(f"compose/landing handoff digest mismatch: {key}")
+if set(compose_summary["digests"]) != handoff_keys:
+    raise SystemExit("compose-real summary contains cwd output artifacts")
+content_handoff_keys = {f"content/{name}" for name in actual_content_files}
+if set(content_summary["digests"]) != content_handoff_keys:
+    raise SystemExit("content summary is not the persisted handoff")
+for key in content_handoff_keys:
+    if content_summary["digests"].get(key) != landing_summary["digests"].get(key):
+        raise SystemExit(f"content/landing handoff digest mismatch: {key}")
+for key in expected_shots:
+    summary_key = "out/" + key
+    frame_key = f"framed/frame_{Path(key).stem.split('_')[-1]}.png"
+    if compose_summary["digests"].get(frame_key) != landing_summary["digests"].get(summary_key):
+        raise SystemExit(f"framed/landing screenshot identity mismatch: {summary_key}")
+if compose_summary.get("counts") != expected_counts or landing_summary.get("counts") != expected_counts:
     raise SystemExit("stage summary counts mismatch")
+if "counts" in content_summary:
+    raise SystemExit("parallel content stage unexpectedly depends on capture counts")
+required_landing_outputs = {"out/" + path for path in artifact_paths}
+if not required_landing_outputs.issubset(landing_summary["digests"]):
+    raise SystemExit("landing stage did not assemble the complete final tree")
 if decoy_digest_path is not None:
     decoy_digests = set(json.load(decoy_digest_path.open(encoding="utf-8")).values())
     observed_shots = {item["sha256"] for item in report["shots"]}
@@ -432,10 +577,12 @@ run_case() {
   rm -f "$DATA_ROOT/order.yaml" "$DATA_ROOT/rationale.md" "$DATA_ROOT/capture-report.json"
   rm -rf "$DATA_ROOT/screens"
   python3 "$REPO/tools/pro_make_pipeline.py" >/dev/null
+  verify_generated_dag
   add_pipeline
   run_id=$(gitmoot pipeline run appkit-pro --home "$HOME_ROOT")
   run_json="$HOME_ROOT/$expected-run.json"
   wait_run "$run_id" "$run_json"
+  record_concurrency "$run_json"
   verify_persisted_kit "$run_json" "$expected" "$digest_file" "$decoy_digests"
 }
 
@@ -449,6 +596,12 @@ first_digest=$(cat "$first_digest_file")
 second_digest=$(cat "$second_digest_file")
 decoy_digest=$(cat "$decoy_digest_file")
 [ "$first_digest" != "$second_digest" ] || fail "second run did not overwrite the first persisted kit"
+if [ "$PARALLEL_SUPPORTED" = 1 ]; then
+  grep -q '^overlap=true ' "$HOME_ROOT/concurrency-evidence" || {
+    cat "$HOME_ROOT/concurrency-evidence" >&2
+    fail "content and capture never overlapped with parallel workers enabled"
+  }
+fi
 
 decoy_capture_stdout=$HOME_ROOT/decoy-capture.stdout
 decoy_capture_stderr=$HOME_ROOT/decoy-capture.stderr
@@ -469,14 +622,74 @@ grep -F 'capture scan boundary excluded: repos/decoy-app (nested-repository)' "$
   fail "decoy capture log did not record the nested-repository boundary"
 }
 
-expose_log=$HOME_ROOT/expose-rejection.log
-if gitmoot pipeline expose --schema "$REPO/schema.json" --home "$HOME_ROOT" appkit-pro >"$expose_log" 2>&1; then
-  fail "appkit-pro unexpectedly exposed"
+TEMPLATE_BACKUP=$(mktemp "$HOME_ROOT/appkit-pro-template.XXXXXX")
+cp -p "$REPO/templates/appkit-pro.yaml.tmpl" "$TEMPLATE_BACKUP"
+printf '%s\n' '# e2e stale-spec mutation' >> "$REPO/templates/appkit-pro.yaml.tmpl"
+stale_stdout=$HOME_ROOT/stale-spec.stdout
+stale_stderr=$HOME_ROOT/stale-spec.stderr
+python3 "$REPO/tools/pro_capture.py" >"$stale_stdout" 2>"$stale_stderr"
+python3 - "$stale_stdout" <<'PY'
+import json, sys
+
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+if len(lines) != 1:
+    raise SystemExit("stale-spec capture stdout did not contain exactly one result line")
+result = json.loads(lines[0])["gitmoot_result"]
+summary = json.loads(result["summary"])
+expected = "stale_spec: regenerate with pro_make_pipeline.py (template changed since this spec was generated)"
+if result["decision"] != "failed" or summary != {"reason": expected, "v": 1}:
+    raise SystemExit(f"stale-spec guard returned {result}")
+PY
+grep -F 'stale_spec: regenerate with pro_make_pipeline.py' "$stale_stderr" >/dev/null || fail "stale-spec reason missing from stderr"
+cp -p "$TEMPLATE_BACKUP" "$REPO/templates/appkit-pro.yaml.tmpl"
+TEMPLATE_BACKUP=''
+
+NOTIFY_TMP=$(mktemp -d "$HOME_ROOT/notify-pro.XXXXXX")
+mkdir -p "$NOTIFY_TMP/bin" "$NOTIFY_TMP/data"
+cat > "$NOTIFY_TMP/bin/curl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" > "$MOCK_CURL_ARGS"
+cat > "$MOCK_CURL_STDIN"
+printf '%s' 200
+EOF
+chmod +x "$NOTIFY_TMP/bin/curl"
+export MOCK_CURL_ARGS=$NOTIFY_TMP/curl.args
+export MOCK_CURL_STDIN=$NOTIFY_TMP/curl.stdin
+notify_stdout=$NOTIFY_TMP/stdout
+notify_stderr=$NOTIFY_TMP/stderr
+PATH="$NOTIFY_TMP/bin:$PATH" \
+  APPKIT_PRO_DATA_DIR="$NOTIFY_TMP/data" \
+  TELEGRAM_BOT_TOKEN='123456:unit_test_token_never_in_argv' \
+  TELEGRAM_CHAT_ID='-1001234567890' \
+  GITMOOT_TRIGGER_UPSTREAM_RUN_ID='run-unit-123' \
+  sh "$REPO/tools/notify_pro.sh" >"$notify_stdout" 2>"$notify_stderr"
+python3 - "$notify_stdout" <<'PY'
+import json, sys
+
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+if len(lines) != 1:
+    raise SystemExit("notify-pro stdout did not contain exactly one result line")
+result = json.loads(lines[0])["gitmoot_result"]
+if result["decision"] != "approved" or "kit attached: 0" not in result["summary"]:
+    raise SystemExit(f"notify-pro fallback failed: {result}")
+PY
+grep -F 'persisted kit is missing; using text fallback' "$notify_stderr" >/dev/null || fail "notify-pro omitted its fallback reason"
+if grep -F '123456:unit_test_token_never_in_argv' "$MOCK_CURL_ARGS" >/dev/null; then
+  fail "notify-pro leaked the bot token into curl argv"
 fi
-grep -Eq 'template-free shell stage|not safe to expose|declares (reads|writes|network)' "$expose_log" || {
-  cat "$expose_log" >&2
-  fail "expose failed without the expected safety rejection"
-}
+grep -F '123456:unit_test_token_never_in_argv' "$MOCK_CURL_STDIN" >/dev/null || fail "notify-pro did not feed the bot URL through stdin config"
+
+gitmoot pipeline add "$REPO/notify-pro.yaml" --enable --home "$HOME_ROOT" >/dev/null
+for pipeline in appkit-pro appkit-notify-pro; do
+  expose_log=$HOME_ROOT/expose-rejection-$pipeline.log
+  if gitmoot pipeline expose --schema "$REPO/schema.json" --home "$HOME_ROOT" "$pipeline" >"$expose_log" 2>&1; then
+    fail "$pipeline unexpectedly exposed"
+  fi
+  grep -Eq 'template-free shell stage|not safe to expose|declares (env_keys|reads|writes|network)' "$expose_log" || {
+    cat "$expose_log" >&2
+    fail "$pipeline expose failed without the expected safety rejection"
+  }
+done
 
 rm -rf "$HOME_ROOT/public-a" "$HOME_ROOT/public-b"
 sh "$REPO/scripts/demo-kit.sh" "$HOME_ROOT/public-a" >/dev/null
@@ -489,4 +702,9 @@ live_after=$(snapshot_live_root)
 printf '%s\n' "pro_e2e: live root unchanged $live_after"
 printf '%s\n' "pro_e2e: persisted exported=$first_digest synthetic=$second_digest (overwrite confirmed)"
 printf '%s\n' "pro_e2e: decoy non-exported=$decoy_digest; nested decoy digests absent; boundary log present"
-printf '%s\n' 'pro_e2e: fixture-full exported, fixture-bare synthetic, fixture-decoy non-exported, persistence verified, expose rejected, public determinism matched'
+if [ "$PARALLEL_SUPPORTED" = 1 ]; then
+  printf '%s\n' "pro_e2e: concurrency $(grep '^overlap=true ' "$HOME_ROOT/concurrency-evidence" | head -n 1)"
+else
+  printf '%s\n' 'pro_e2e: daemon has no parallel-worker flag; fork/join edges verified structurally'
+fi
+printf '%s\n' 'pro_e2e: fixture-full exported, fixture-bare synthetic, fixture-decoy non-exported, persistence verified, both personal pipelines expose-rejected, notify fallback hardened, stale spec rejected, public determinism matched'

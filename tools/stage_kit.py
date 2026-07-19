@@ -223,8 +223,13 @@ def run_kit(
     summary_extras: dict[str, object] | None = None,
     render_assets: tuple[dict[int, object], dict[int, bytes]] | None = None,
     render_options: dict[str, object] | None = None,
+    content_builder: Callable[
+        [dict[str, object], dict[int, object], dict[int, bytes]], list[Path]
+    ]
+    | None = None,
     extra_identity_digests: dict[str, str] | None = None,
     upstream_summary_extras: dict[str, set[str]] | None = None,
+    artifact_builder: Callable[[dict[str, object]], list[Path]] | None = None,
 ) -> dict[str, object]:
     """Regenerate, cross-check, and package a public or personal kit."""
 
@@ -234,30 +239,50 @@ def run_kit(
         context, values, stage_ids, upstream_summary_extras
     )
 
-    if screenshot_builder is None:
-        framed, devices = screens.build_render_assets(values)
-        screenshot_paths = screens.render_screenshots(
-            values, screens.encode_framed_screens(framed)
+    if artifact_builder is not None:
+        if any(
+            option is not None
+            for option in (
+                screenshot_builder,
+                render_assets,
+                render_options,
+                content_builder,
+            )
+        ):
+            raise VerificationError("artifact_builder_options")
+        upstream_paths = sorted(
+            artifact_builder(values), key=lambda path: path.as_posix()
         )
     else:
-        screenshot_paths = screenshot_builder(values)
-        if render_assets is None:
+        if screenshot_builder is None:
             framed, devices = screens.build_render_assets(values)
-            device_pngs = screens.encode_device_screens(devices)
+            screenshot_paths = screens.render_screenshots(
+                values, screens.encode_framed_screens(framed)
+            )
         else:
-            framed, device_pngs = render_assets
-    if screenshot_builder is None:
-        device_pngs = screens.encode_device_screens(devices)
-    content_paths = render.render_all(
-        values,
-        framed,
-        device_pngs,
-        **({} if render_options is None else render_options),
-    )
-    upstream_paths = sorted(
-        screenshot_paths + content_paths,
-        key=lambda path: path.as_posix(),
-    )
+            screenshot_paths = screenshot_builder(values)
+            if render_assets is None:
+                framed, devices = screens.build_render_assets(values)
+                device_pngs = screens.encode_device_screens(devices)
+            else:
+                framed, device_pngs = render_assets
+        if screenshot_builder is None:
+            device_pngs = screens.encode_device_screens(devices)
+        if content_builder is None:
+            content_paths = render.render_all(
+                values,
+                framed,
+                device_pngs,
+                **({} if render_options is None else render_options),
+            )
+        else:
+            if render_options is not None:
+                raise VerificationError("content_builder_options")
+            content_paths = content_builder(values, framed, device_pngs)
+        upstream_paths = sorted(
+            screenshot_paths + content_paths,
+            key=lambda path: path.as_posix(),
+        )
     upstream_digests = identity_digests(upstream_paths, Path.cwd())
     if extra_identity_digests is not None:
         overlap = set(upstream_digests).intersection(extra_identity_digests)

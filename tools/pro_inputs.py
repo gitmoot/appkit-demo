@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -17,11 +18,20 @@ TARGET_FILE = "target"
 ORDER_FILE = "order.yaml"
 REPORT_FILE = "capture-report.json"
 RATIONALE_FILE = "rationale.md"
+SPEC_STAMP_FILE = "spec-stamp"
 PRO_APP_NAME_DEFAULT = "My App"
+STALE_SPEC_REASON = (
+    "stale_spec: regenerate with pro_make_pipeline.py "
+    "(template changed since this spec was generated)"
+)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ProDataError(RuntimeError):
+    pass
+
+
+class StaleSpecError(ProDataError):
     pass
 
 
@@ -148,7 +158,7 @@ def _parse_scalar(raw: str) -> str:
     return value
 
 
-def parse_order(text: str) -> dict[str, object]:
+def _parse_order_mapping(text: str) -> tuple[dict[str, object], str]:
     source: dict[str, object] = {}
     order_target: str | None = None
     for raw_line in text.splitlines():
@@ -171,6 +181,11 @@ def parse_order(text: str) -> dict[str, object]:
         source[key] = _parse_scalar(raw_value)
     if order_target is None:
         raise ProDataError("order is missing target")
+    return source, order_target
+
+
+def parse_order(text: str) -> dict[str, object]:
+    source, order_target = _parse_order_mapping(text)
     if order_target != str(load_target()):
         raise ProDataError("stale_order: order.yaml was derived for a different target")
     try:
@@ -183,8 +198,39 @@ def load_order() -> dict[str, object]:
     return parse_order(_safe_regular(data_root() / ORDER_FILE, 16 * 1024))
 
 
+def load_persisted_app_name() -> str | None:
+    """Read a validated explicit app name without requiring the target to remain mounted."""
+
+    source, _ = _parse_order_mapping(
+        _safe_regular(data_root() / ORDER_FILE, 16 * 1024)
+    )
+    if "app_name" not in source:
+        return None
+    try:
+        return str(validate_inputs({"app_name": source["app_name"]})["app_name"])
+    except InputError as error:
+        raise ProDataError(
+            f"order validation failed:{error.field}:{error.code}"
+        ) from error
+
+
 def require_rationale() -> None:
     _safe_regular(data_root() / RATIONALE_FILE, 64 * 1024)
+
+
+def require_spec_stamp() -> str:
+    template = Path(__file__).resolve().parent.parent / "templates" / "appkit-pro.yaml.tmpl"
+    try:
+        if not template.is_file() or template.is_symlink():
+            raise ProDataError("pipeline template missing or unsafe")
+        current = hashlib.sha256(template.read_bytes()).hexdigest()
+        stamp_text = _safe_regular(data_root() / SPEC_STAMP_FILE, 128)
+    except (OSError, ProDataError) as error:
+        raise StaleSpecError(STALE_SPEC_REASON) from error
+    lines = stamp_text.splitlines()
+    if len(lines) != 1 or not _SHA256_RE.fullmatch(lines[0]) or lines[0] != current:
+        raise StaleSpecError(STALE_SPEC_REASON)
+    return current
 
 
 def load_capture_report() -> dict[str, object]:

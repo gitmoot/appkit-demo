@@ -1,3 +1,4 @@
+# template_sha256: __SPEC_SHA256__
 name: appkit-pro
 repo: gitmoot/appkit-demo
 description: Personal real-app launch kit with repo-grounded metadata and observed screenshots.
@@ -22,9 +23,13 @@ __DERIVE_PROMPT__
     timeout: 8m
   - id: content
     cmd: python3 tools/pro_stage_content.py
-    needs: [derive, compose-real]
+    needs: [derive]
+    timeout: 8m
+  - id: landing
+    cmd: python3 tools/pro_stage_landing.py
+    needs: [content, compose-real]
     timeout: 8m
   - id: kit
     cmd: python3 tools/pro_stage_kit.py
-    needs: [compose-real, content]
+    needs: [landing]
     timeout: 10m

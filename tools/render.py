@@ -175,23 +175,46 @@ def _icon_relpath(size: int) -> str:
 def expected_content_relpaths(
     values: dict[str, object], device_count: int = 3
 ) -> list[str]:
+    return sorted(
+        expected_content_core_relpaths(values)
+        + expected_landing_relpaths(device_count)
+    )
+
+
+def expected_content_core_relpaths(values: dict[str, object]) -> list[str]:
     paths = [
         "out/README.md",
+        "out/legal/privacy.md",
+        "out/legal/terms.md",
+    ]
+    paths.extend(_icon_relpath(size) for size in ICON_SIZES)
+    for locale in list(values["locales"]):
+        for filename in COPY_FILES:
+            paths.append(f"out/copy/{locale}/{filename}.txt")
+    return sorted(paths)
+
+
+def expected_content_handoff_relpaths(values: dict[str, object]) -> list[str]:
+    """Files produced by Pro's screen-independent content branch."""
+
+    return [
+        path
+        for path in expected_content_core_relpaths(values)
+        if path != "out/README.md"
+    ]
+
+
+def expected_landing_relpaths(device_count: int) -> list[str]:
+    paths = [
         "out/landing/index.html",
         "out/landing/legal/privacy.html",
         "out/landing/legal/terms.html",
         "out/landing/og.png",
-        "out/legal/privacy.md",
-        "out/legal/terms.md",
     ]
     paths.extend(
         f"out/landing/assets/device_{index}.png"
         for index in range(1, device_count + 1)
     )
-    paths.extend(_icon_relpath(size) for size in ICON_SIZES)
-    for locale in list(values["locales"]):
-        for filename in COPY_FILES:
-            paths.append(f"out/copy/{locale}/{filename}.txt")
     return sorted(paths)
 
 
@@ -244,17 +267,31 @@ def _master_icon(values: dict[str, object]) -> Image.Image:
     return image
 
 
-def render_icons(values: dict[str, object]) -> tuple[list[Path], dict[int, bytes]]:
+def build_icon_pngs(values: dict[str, object]) -> dict[int, bytes]:
     master = _master_icon(values)
-    outputs: list[Path] = []
     encoded: dict[int, bytes] = {}
     for size in ICON_SIZES:
         image = master if size == 1024 else master.resize((size, size), Image.Resampling.LANCZOS)
-        output, data = _write_png(_icon_relpath(size), image)
-        outputs.append(output)
-        encoded[size] = data
+        encoded[size] = frame_compose.png_bytes(image)
     header = master.resize((64, 64), Image.Resampling.LANCZOS)
     encoded[64] = frame_compose.png_bytes(header)
+    return encoded
+
+
+def write_icons(encoded: dict[int, bytes]) -> list[Path]:
+    if sorted(encoded) != sorted((*ICON_SIZES, 64)):
+        raise TemplateError("icon set is invalid")
+    outputs: list[Path] = []
+    for size in ICON_SIZES:
+        output = safe_output_path(_icon_relpath(size))
+        output.write_bytes(encoded[size])
+        outputs.append(output)
+    return outputs
+
+
+def render_icons(values: dict[str, object]) -> tuple[list[Path], dict[int, bytes]]:
+    encoded = build_icon_pngs(values)
+    outputs = write_icons(encoded)
     return outputs, encoded
 
 
@@ -557,6 +594,70 @@ def render_readme(
     return _write_text(
         "out/README.md", _kit_readme(values, provenance, screenshot_count)
     )
+
+
+def render_content_readme(values: dict[str, object]) -> Path:
+    """Write the customer-visible preview for the independent Pro content branch."""
+
+    app_name = str(values["app_name"]).replace("\\", "\\\\").replace("|", "\\|")
+    rows: list[tuple[str, str]] = []
+    for locale in list(values["locales"]):
+        for filename in COPY_FILES:
+            rows.append(
+                (
+                    f"copy/{locale}/{filename}.txt",
+                    "Localized App Store metadata",
+                )
+            )
+    for size in (1024, 180, 167, 152, 120):
+        rows.append((f"icons/icon-{size}.png", f"{size}px app icon"))
+    rows.extend(
+        (
+            ("icons/favicon-32.png", "Browser favicon"),
+            ("legal/privacy.md", "Editable privacy source"),
+            ("legal/terms.md", "Editable terms source"),
+            ("README.md", "This content-branch inventory"),
+        )
+    )
+    lines = [
+        f"# {app_name} Content Preview",
+        "",
+        "This branch prepares copy, editable legal sources, and icons independently of screenshot capture.",
+        "",
+        "| File | What it is |",
+        "| --- | --- |",
+    ]
+    for path, description in sorted(rows, key=lambda row: row[0]):
+        lines.append(f"| `{path}` | {description} |")
+    lines.extend(
+        (
+            "",
+            "The landing page, hosted legal HTML, screenshots, provenance, manifest, and ZIP are added after the visual branch joins.",
+            "",
+        )
+    )
+    return _write_text("out/README.md", "\n".join(lines))
+
+
+def render_content_core(values: dict[str, object]) -> list[Path]:
+    """Render the Pro branch that does not depend on captured screenshots."""
+
+    outputs = render_copy(values)
+    icon_paths, _ = render_icons(values)
+    outputs.extend(icon_paths)
+    outputs.extend(render_legal(values))
+    outputs.append(render_content_readme(values))
+    return sorted(outputs, key=lambda path: path.as_posix())
+
+
+def render_content_handoff(values: dict[str, object]) -> list[Path]:
+    """Render only artifacts that the Pro landing join copies verbatim."""
+
+    outputs = render_copy(values)
+    icon_paths, _ = render_icons(values)
+    outputs.extend(icon_paths)
+    outputs.extend(render_legal(values))
+    return sorted(outputs, key=lambda path: path.as_posix())
 
 
 def render_all(
