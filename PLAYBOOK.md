@@ -1,0 +1,17 @@
+# Appkit Pro playbook for fable
+
+For “marketing for my app at this repo,” run this exact personal workflow from the `appkit-demo` checkout:
+
+```sh
+mkdir -p /root/appkit-pro-data
+printf '%s\n' /absolute/path/to/the/app-repo > /root/appkit-pro-data/target
+python3 tools/pro_make_pipeline.py
+gitmoot pipeline add appkit-pro.yaml --force
+gitmoot pipeline run appkit-pro
+```
+
+The kit lands in the checkout stage's `out/`; the assembled deliverable is `out/launch-kit.zip`.
+
+This is intentionally a personal, unexposable pipeline. The generated produce stage needs a static read grant for the target repository and a write grant for `/root/appkit-pro-data`, so the live home may surface sandbox-approval friction for those paths. Capture prefers exported screenshots, then a real browser rendering of a Flutter or built web surface, then deterministic synthesis. Browser capture is not simulator capture, so native-only screens need exported images for full fidelity.
+
+Compatibility note: the current development Gitmoot CLI upserts on plain `pipeline add` and may reject the documented `--force` flag. If so, rerun the add command without `--force`; do not change the generated spec.

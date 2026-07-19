@@ -47,6 +47,26 @@ Served bundles include the generated stage artifacts, with their digests bound i
 
 The assembled ZIP contains `copy/<locale>/` metadata including release notes, `screenshots/<locale>/`, the `icons/` set, `landing/index.html`, transparent phones in `landing/assets/`, `landing/og.png`, hosted pages in `landing/legal/`, editable Markdown in `legal/`, and a generated `README.md` mapping every file to its launch destination. The landing ships in English in v1, and synthesized screens are used because the flat typed schema cannot accept real screenshot files. The manifest covers every generated artifact except itself and the ZIP; the ZIP includes the manifest.
 
+## Appkit Pro (personal only)
+
+`appkit-pro` is a separate personal workflow for turning a trusted local app repository into the same launch kit with repo-grounded copy and real screenshots where possible. It is deliberately not service-safe or exposable: its generated spec contains an agent stage with static target-repository reads, `/root/appkit-pro-data` writes, and network permission. That non-shell stage and its grants make Gitmoot's expose safety check reject the pipeline.
+
+The personal DAG is derive-first: `derive -> capture`, then `compose-real` depends on both; `content` depends on derive; and `kit` joins `compose-real` plus `content`. Running derive before capture lets the synthetic fallback use grounded/defaulted order values immediately. The capture ladder first looks for qualifying exported store/marketing screenshots, then tries a Flutter or already-built web surface with local Chrome capture, then falls back to deterministic synthetic screens. Web capture is browser fidelity, not an iOS or Android simulator.
+
+The target path is dynamic while pipeline read grants are static, so generate the pipeline definition after choosing the repository:
+
+```sh
+mkdir -p /root/appkit-pro-data
+printf '%s\n' /absolute/path/to/your/app > /root/appkit-pro-data/target
+python3 tools/pro_make_pipeline.py
+gitmoot pipeline add appkit-pro.yaml --force
+gitmoot pipeline run appkit-pro
+```
+
+The current development CLI upserts a pipeline definition with plain `pipeline add`; if it reports that `--force` is unknown, rerun that line without `--force`. `/root/appkit-pro-data` is a fixed personal-trust side channel: `target` is the caller's input, derive writes `order.yaml` and `rationale.md`, and capture writes `screens/` plus `capture-report.json`. Compose, content, and kit write launch artifacts only under their detached checkout's `out/`. The Pro kit copies the capture report into the manifest and ZIP, records captured-versus-synthesized provenance in its generated README, and carries the synthetic fallback warning in its manifest.
+
+Because the derive stage reads outside the appkit-demo checkout and writes the personal side channel, a live Codex home may require explicit sandbox approval for both the target repository read grant and `/root/appkit-pro-data` write grant. The current Gitmoot schema permits those grants only on the produce stage; the trusted shell stages use the operator-owned side channel directly. Keep this workflow personal; use the public `appkit-demo` service for untrusted callers.
+
 ## Defaults and validation
 
 Only `app_name` is required. Locales default to `en,it`; color, tagline, three headlines, support email, and developer entity have deterministic defaults, including when an optional input is present but blank. Stages trim every value, reject overlong or non-NFC strings, all Unicode `C*` categories (including controls, zero-width/bidirectional characters, and surrogates), invalid colors, non-enumerated locale lists, and non-conservative ASCII email addresses.

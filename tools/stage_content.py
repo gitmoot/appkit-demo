@@ -19,16 +19,19 @@ from stage_support import (
 )
 
 
+def run_content(values: dict[str, object]) -> dict[str, object]:
+    frame_compose.verify_assets()
+    prepare_output_tree()
+    framed, devices = screens.build_render_assets(values)
+    device_pngs = screens.encode_device_screens(devices)
+    outputs = render.render_all(values, framed, device_pngs)
+    return success_summary(values, identity_digests(outputs, Path.cwd()))
+
+
 def main() -> None:
     try:
         values = load_inputs()
-        frame_compose.verify_assets()
-        prepare_output_tree()
-        framed, devices = screens.build_render_assets(values)
-        device_pngs = screens.encode_device_screens(devices)
-        outputs = render.render_all(values, framed, device_pngs)
-        digests = identity_digests(outputs, Path.cwd())
-        emit_result("implemented", success_summary(values, digests))
+        emit_result("implemented", run_content(values))
     except InputError as error:
         log(f"validation failed: {error.field}/{error.code}")
         emit_result("failed", failure_summary(f"validation:{error.field}:{error.code}"))

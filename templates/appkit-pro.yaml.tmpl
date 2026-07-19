@@ -1,0 +1,30 @@
+name: appkit-pro
+repo: gitmoot/appkit-demo
+description: Personal real-app launch kit with repo-grounded metadata and observed screenshots.
+stages:
+  - id: derive
+    agent: appkit-deriver
+    action: produce
+    write: true
+    reads: [__TARGET_REPO__]
+    writes: [/root/appkit-pro-data]
+    network: true
+    timeout: 15m
+    prompt: |
+__DERIVE_PROMPT__
+  - id: capture
+    cmd: python3 tools/pro_capture.py
+    needs: [derive]
+    timeout: 15m
+  - id: compose-real
+    cmd: python3 tools/pro_stage_compose.py
+    needs: [capture, derive]
+    timeout: 8m
+  - id: content
+    cmd: python3 tools/pro_stage_content.py
+    needs: [derive]
+    timeout: 8m
+  - id: kit
+    cmd: python3 tools/pro_stage_kit.py
+    needs: [compose-real, content]
+    timeout: 10m

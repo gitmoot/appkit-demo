@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import frame_compose
@@ -73,17 +74,19 @@ def _load_context() -> dict[str, object]:
 
 
 def _upstream_summaries(
-    context: dict[str, object], values: dict[str, object]
+    context: dict[str, object],
+    values: dict[str, object],
+    stage_ids: tuple[str, ...] = ("compose", "content"),
 ) -> dict[str, dict[str, object]]:
     if context.get("schema_version") != 1 or context.get("complete") is not True:
         raise VerificationError("context_incomplete")
     stages = context.get("stages")
-    if not isinstance(stages, dict) or sorted(stages) != ["compose", "content"]:
+    if not isinstance(stages, dict) or sorted(stages) != sorted(stage_ids):
         raise VerificationError("context_stages")
 
     expected_input = input_sha256(values)
     parsed: dict[str, dict[str, object]] = {}
-    for stage_id in ("compose", "content"):
+    for stage_id in stage_ids:
         stage = stages.get(stage_id)
         if not isinstance(stage, dict):
             raise VerificationError("context_stage_invalid")
@@ -124,12 +127,14 @@ def _verify_upstream(
     values: dict[str, object],
     own_digests: dict[str, str],
     summaries: dict[str, dict[str, object]],
+    expected_groups: dict[str, list[str]] | None = None,
 ) -> None:
-    expected_groups = {
-        "compose": screens.expected_screenshot_relpaths(values),
-        "content": render.expected_content_relpaths(values),
-    }
-    for stage_id in ("compose", "content"):
+    if expected_groups is None:
+        expected_groups = {
+            "compose": screens.expected_screenshot_relpaths(values),
+            "content": render.expected_content_relpaths(values),
+        }
+    for stage_id in summaries:
         expected = {
             path: own_digests[path] for path in sorted(expected_groups[stage_id])
         }
@@ -137,7 +142,11 @@ def _verify_upstream(
             raise VerificationError("digest_mismatch")
 
 
-def _write_manifest(paths: list[Path], values: dict[str, object]) -> tuple[Path, int]:
+def _write_manifest(
+    paths: list[Path],
+    values: dict[str, object],
+    warnings: list[str] | None = None,
+) -> tuple[Path, int]:
     out = Path.cwd() / "out"
     records: list[dict[str, object]] = []
     for path in sorted(paths, key=lambda item: item.relative_to(out).as_posix()):
@@ -155,6 +164,8 @@ def _write_manifest(paths: list[Path], values: dict[str, object]) -> tuple[Path,
         "schema_version": 1,
         "zlib": ZLIB_VERSION,
     }
+    if warnings is not None:
+        manifest["warnings"] = warnings
     manifest_path = safe_output_path("out/manifest.json")
     manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8", newline="\n")
     return manifest_path, len(records)
@@ -190,54 +201,91 @@ def _paths_size(paths: list[Path]) -> int:
     )
 
 
+def run_kit(
+    values: dict[str, object],
+    context: dict[str, object],
+    *,
+    stage_ids: tuple[str, ...] = ("compose", "content"),
+    screenshot_builder: Callable[[dict[str, object]], list[Path]] | None = None,
+    expected_groups: dict[str, list[str]] | None = None,
+    enrich: Callable[[list[Path]], list[Path]] | None = None,
+    manifest_warnings: list[str] | None = None,
+    summary_extras: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Regenerate, cross-check, and package a public or personal kit."""
+
+    frame_compose.verify_assets()
+    prepare_output_tree()
+    summaries = _upstream_summaries(context, values, stage_ids)
+
+    if screenshot_builder is None:
+        framed, devices = screens.build_render_assets(values)
+        screenshot_paths = screens.render_screenshots(
+            values, screens.encode_framed_screens(framed)
+        )
+    else:
+        screenshot_paths = screenshot_builder(values)
+        framed, devices = screens.build_render_assets(values)
+    content_paths = render.render_all(
+        values,
+        framed,
+        screens.encode_device_screens(devices),
+    )
+    upstream_paths = sorted(
+        screenshot_paths + content_paths,
+        key=lambda path: path.as_posix(),
+    )
+    upstream_digests = identity_digests(upstream_paths, Path.cwd())
+    _verify_upstream(values, upstream_digests, summaries, expected_groups)
+
+    upstream_relpaths = {
+        path.relative_to(Path.cwd() / "out").as_posix()
+        for path in upstream_paths
+    }
+    _require_exact_tree(upstream_relpaths)
+
+    artifact_paths = upstream_paths if enrich is None else sorted(
+        enrich(upstream_paths), key=lambda path: path.as_posix()
+    )
+    base_relpaths = {
+        path.relative_to(Path.cwd() / "out").as_posix()
+        for path in artifact_paths
+    }
+    _require_exact_tree(base_relpaths)
+    manifest_path, artifact_count = _write_manifest(
+        artifact_paths,
+        values,
+        warnings=manifest_warnings,
+    )
+    _require_exact_tree(base_relpaths | {"manifest.json"})
+    zip_path = _write_zip(artifact_paths, manifest_path)
+    _require_exact_tree(base_relpaths | {"manifest.json", "launch-kit.zip"})
+
+    artifact_bytes = _paths_size(artifact_paths)
+    if artifact_bytes > MAX_OUTPUT_BYTES:
+        raise VerificationError("artifact_budget")
+    zip_bytes = zip_path.stat().st_size
+    if zip_bytes > MAX_ZIP_BYTES:
+        raise VerificationError("zip_budget")
+
+    final_digests = identity_digests(artifact_paths, Path.cwd())
+    final_digests["out/manifest.json"] = sha256_file(manifest_path)
+    final_digests["out/launch-kit.zip"] = sha256_file(zip_path)
+    extras: dict[str, object] = {
+        "artifact_count": artifact_count,
+        "artifact_bytes": artifact_bytes,
+        "manifest_sha256": final_digests["out/manifest.json"],
+        "zip_bytes": zip_bytes,
+    }
+    if summary_extras is not None:
+        extras.update(summary_extras)
+    return success_summary(values, final_digests, **extras)
+
+
 def main() -> None:
     try:
         values = load_inputs()
-        frame_compose.verify_assets()
-        prepare_output_tree()
-        summaries = _upstream_summaries(_load_context(), values)
-
-        framed, devices = screens.build_render_assets(values)
-        framed_pngs = screens.encode_framed_screens(framed)
-        device_pngs = screens.encode_device_screens(devices)
-        screenshot_paths = screens.render_screenshots(values, framed_pngs)
-        content_paths = render.render_all(values, framed, device_pngs)
-        artifact_paths = sorted(
-            screenshot_paths + content_paths, key=lambda path: path.as_posix()
-        )
-        digests = identity_digests(artifact_paths, Path.cwd())
-        _verify_upstream(values, digests, summaries)
-
-        base_relpaths = {
-            path.relative_to(Path.cwd() / "out").as_posix() for path in artifact_paths
-        }
-        _require_exact_tree(base_relpaths)
-        manifest_path, artifact_count = _write_manifest(artifact_paths, values)
-        _require_exact_tree(base_relpaths | {"manifest.json"})
-        zip_path = _write_zip(artifact_paths, manifest_path)
-        _require_exact_tree(base_relpaths | {"manifest.json", "launch-kit.zip"})
-        artifact_bytes = _paths_size(artifact_paths)
-        if artifact_bytes > MAX_OUTPUT_BYTES:
-            raise VerificationError("artifact_budget")
-        zip_bytes = zip_path.stat().st_size
-        if zip_bytes > MAX_ZIP_BYTES:
-            raise VerificationError("zip_budget")
-
-        final_digests = dict(digests)
-        final_digests["out/manifest.json"] = sha256_file(manifest_path)
-        final_digests["out/launch-kit.zip"] = sha256_file(zip_path)
-        manifest_sha = final_digests["out/manifest.json"]
-        emit_result(
-            "implemented",
-            success_summary(
-                values,
-                final_digests,
-                artifact_count=artifact_count,
-                artifact_bytes=artifact_bytes,
-                manifest_sha256=manifest_sha,
-                zip_bytes=zip_bytes,
-            ),
-        )
+        emit_result("implemented", run_kit(values, _load_context()))
     except InputError as error:
         log(f"validation failed: {error.field}/{error.code}")
         emit_result("failed", failure_summary(f"validation:{error.field}:{error.code}"))

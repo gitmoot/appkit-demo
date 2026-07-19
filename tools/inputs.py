@@ -8,6 +8,7 @@ import json
 import os
 import re
 import unicodedata
+from collections.abc import Mapping
 
 
 FIELD_LIMITS = {
@@ -40,6 +41,7 @@ _EMAIL_RE = re.compile(
     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?)+$"
 )
 _LOCALE_ORDER = ("en", "it")
+_MISSING = object()
 
 
 class InputError(ValueError):
@@ -59,28 +61,51 @@ def _reject_unsafe_unicode(field: str, value: str) -> None:
             raise InputError(field, "unsafe_unicode")
 
 
-def _read_string(field: str) -> str:
-    env_name = "GITMOOT_INPUT_" + field.upper()
-    raw = os.environ.get(env_name)
-    if raw is None:
+def _read_string(
+    field: str,
+    raw: object = _MISSING,
+    app_name_default: str | None = None,
+) -> str:
+    if raw is _MISSING:
         if field == "app_name":
-            raise InputError(field, "required")
-        raw = DEFAULTS[field]
+            if app_name_default is None:
+                raise InputError(field, "required")
+            raw = app_name_default
+        else:
+            raw = DEFAULTS[field]
+    if not isinstance(raw, str):
+        raise InputError(field, "type")
     value = raw.strip()
     if not value:
         if field == "app_name":
-            raise InputError(field, "required")
-        value = DEFAULTS[field]
+            if app_name_default is None:
+                raise InputError(field, "required")
+            value = app_name_default
+        else:
+            value = DEFAULTS[field]
     if len(value) > FIELD_LIMITS[field]:
         raise InputError(field, "too_long")
     _reject_unsafe_unicode(field, value)
     return value
 
 
-def load_inputs() -> dict[str, object]:
-    """Read, normalize, and validate the fixed GITMOOT_INPUT_* surface."""
+def validate_inputs(
+    source: Mapping[str, object],
+    *,
+    app_name_default: str | None = None,
+) -> dict[str, object]:
+    """Validate a plain mapping with the same rules used by service inputs."""
 
-    values = {field: _read_string(field) for field in sorted(FIELD_LIMITS)}
+    if any(key not in FIELD_LIMITS for key in source):
+        raise InputError("inputs", "unknown_field")
+    values = {
+        field: _read_string(
+            field,
+            source[field] if field in source else _MISSING,
+            app_name_default,
+        )
+        for field in sorted(FIELD_LIMITS)
+    }
 
     brand_color = str(values["brand_color"]).lower()
     if not _BRAND_RE.fullmatch(brand_color):
@@ -104,6 +129,17 @@ def load_inputs() -> dict[str, object]:
         raise InputError("support_email", "invalid")
 
     return values
+
+
+def load_inputs() -> dict[str, object]:
+    """Read the fixed GITMOOT_INPUT_* surface, preserving public behavior."""
+
+    source: dict[str, object] = {}
+    for field in sorted(FIELD_LIMITS):
+        raw = os.environ.get("GITMOOT_INPUT_" + field.upper())
+        if raw is not None:
+            source[field] = raw
+    return validate_inputs(source)
 
 
 def canonical_inputs_json(values: dict[str, object]) -> str:

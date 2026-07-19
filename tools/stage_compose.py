@@ -18,16 +18,20 @@ from stage_support import (
 )
 
 
+def run_compose(values: dict[str, object]) -> dict[str, object]:
+    frame_compose.verify_assets()
+    prepare_output_tree()
+    framed = screens.build_framed_screens(values)
+    framed_pngs = screens.encode_framed_screens(framed)
+    outputs = screens.render_screenshots(values, framed_pngs)
+    return success_summary(values, identity_digests(outputs, Path.cwd()))
+
+
 def main() -> None:
     try:
         values = load_inputs()
-        frame_compose.verify_assets()
-        prepare_output_tree()
-        framed = screens.build_framed_screens(values)
-        framed_pngs = screens.encode_framed_screens(framed)
-        outputs = screens.render_screenshots(values, framed_pngs)
-        digests = identity_digests(outputs, Path.cwd())
-        emit_result("implemented", success_summary(values, digests))
+        summary = run_compose(values)
+        emit_result("implemented", summary)
     except InputError as error:
         log(f"validation failed: {error.field}/{error.code}")
         emit_result("failed", failure_summary(f"validation:{error.field}:{error.code}"))
