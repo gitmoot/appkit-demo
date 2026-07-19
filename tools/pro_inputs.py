@@ -24,6 +24,10 @@ STALE_SPEC_REASON = (
     "stale_spec: regenerate with pro_make_pipeline.py "
     "(template changed since this spec was generated)"
 )
+SWITCH_TARGET_REQUIRES_REGEN_REASON = (
+    "switch_target_requires_regen: target changed since the spec was generated - "
+    "run tools/pro_make_pipeline.py, then re-add the pipeline"
+)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -32,6 +36,10 @@ class ProDataError(RuntimeError):
 
 
 class StaleSpecError(ProDataError):
+    pass
+
+
+class SwitchTargetRequiresRegenError(StaleSpecError):
     pass
 
 
@@ -243,18 +251,45 @@ def require_rationale() -> None:
     _safe_regular(data_root() / RATIONALE_FILE, 64 * 1024)
 
 
+def _parse_spec_stamp(text: str) -> tuple[str, str | None]:
+    lines = text.splitlines()
+    if len(lines) == 1 and _SHA256_RE.fullmatch(lines[0]):
+        return lines[0], None
+    try:
+        stamp = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ProDataError("spec stamp is malformed") from error
+    if (
+        not isinstance(stamp, dict)
+        or sorted(stamp) != ["target", "template_sha256"]
+        or not isinstance(stamp.get("template_sha256"), str)
+        or not _SHA256_RE.fullmatch(stamp["template_sha256"])
+        or not isinstance(stamp.get("target"), str)
+        or not stamp["target"]
+        or len(stamp["target"]) > 4096
+        or not Path(stamp["target"]).is_absolute()
+        or Path(stamp["target"]) == Path("/")
+    ):
+        raise ProDataError("spec stamp is malformed")
+    return stamp["template_sha256"], stamp["target"]
+
+
 def require_spec_stamp() -> str:
     template = Path(__file__).resolve().parent.parent / "templates" / "appkit-pro.yaml.tmpl"
     try:
         if not template.is_file() or template.is_symlink():
             raise ProDataError("pipeline template missing or unsafe")
         current = hashlib.sha256(template.read_bytes()).hexdigest()
-        stamp_text = _safe_regular(data_root() / SPEC_STAMP_FILE, 128)
+        stamp_text = _safe_regular(data_root() / SPEC_STAMP_FILE, 8 * 1024)
+        stamped_sha256, stamped_target = _parse_spec_stamp(stamp_text)
     except (OSError, ProDataError) as error:
         raise StaleSpecError(STALE_SPEC_REASON) from error
-    lines = stamp_text.splitlines()
-    if len(lines) != 1 or not _SHA256_RE.fullmatch(lines[0]) or lines[0] != current:
+    if stamped_sha256 != current:
         raise StaleSpecError(STALE_SPEC_REASON)
+    if stamped_target is not None and stamped_target != str(load_target()):
+        raise SwitchTargetRequiresRegenError(
+            SWITCH_TARGET_REQUIRES_REGEN_REASON
+        )
     return current
 
 

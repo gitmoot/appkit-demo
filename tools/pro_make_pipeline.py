@@ -195,7 +195,16 @@ def main() -> None:
     temporary.replace(OUTPUT)
     pro_inputs.atomic_write_text(
         data_root / pro_inputs.SPEC_STAMP_FILE,
-        template_sha256 + "\n",
+        json.dumps(
+            {
+                "target": str(target),
+                "template_sha256": template_sha256,
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
     )
     print(str(OUTPUT))
 

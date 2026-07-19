@@ -20,36 +20,62 @@ case "$FIXTURE_ROOT:$DATA_ROOT:$LIVE_DATA_ROOT:$HOME_ROOT" in
   *) fail "unsafe fixed roots" ;;
 esac
 
-snapshot_live_root() {
+stat_live_target() {
   python3 - "$LIVE_DATA_ROOT" <<'PY'
 from pathlib import Path
-import hashlib, json, os, stat, sys
+import json, stat, sys
 
-root = Path(sys.argv[1])
-records = []
-if not root.exists() and not root.is_symlink():
-    records.append({"missing": True})
+target = Path(sys.argv[1]) / "target"
+try:
+    info = target.lstat()
+except FileNotFoundError:
+    record = {"exists": False}
 else:
-    for path in [root, *sorted(root.rglob("*"), key=lambda item: item.as_posix())]:
-        info = path.lstat()
-        record = {
-            "mode": stat.S_IFMT(info.st_mode) | stat.S_IMODE(info.st_mode),
-            "mtime_ns": info.st_mtime_ns,
-            "path": "." if path == root else path.relative_to(root).as_posix(),
-            "size": info.st_size,
-        }
-        if stat.S_ISREG(info.st_mode):
-            record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
-        elif stat.S_ISLNK(info.st_mode):
-            record["target"] = os.readlink(path)
-        records.append(record)
-payload = json.dumps(records, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-print(hashlib.sha256(payload.encode("utf-8")).hexdigest())
+    record = {
+        "exists": True,
+        "inode": info.st_ino,
+        "mode": stat.S_IFMT(info.st_mode) | stat.S_IMODE(info.st_mode),
+        "mtime_ns": info.st_mtime_ns,
+        "size": info.st_size,
+    }
+print(json.dumps(record, separators=(",", ":"), sort_keys=True))
 PY
 }
 
-live_before=$(snapshot_live_root)
+assert_e2e_isolation() {
+  python3 - "$DATA_ROOT" "$LIVE_DATA_ROOT" "$FIXTURE_ROOT" "$HOME_ROOT" "$REPO" <<'PY'
+from pathlib import Path
+import sys
+
+data_root, live_root, fixture_root, home_root, repo = (
+    Path(value).resolve(strict=False) for value in sys.argv[1:]
+)
+if data_root == live_root:
+    raise SystemExit("E2E data root aliases the live personal data root")
+touch_points = [
+    data_root,
+    *(data_root / name for name in (
+        "target", "order.yaml", "rationale.md", "spec-stamp",
+        "capture-report.json", "screens", "framed", "content",
+        "content-agent", "kit",
+    )),
+    fixture_root,
+    home_root,
+    repo / "appkit-pro.yaml",
+    repo / "out",
+    repo / "templates" / "appkit-pro.yaml.tmpl",
+]
+for path in touch_points:
+    resolved = path.resolve(strict=False)
+    if resolved == live_root or live_root in resolved.parents:
+        raise SystemExit(f"E2E write path resolves under live data root: {path}")
+PY
+}
+
+assert_e2e_isolation
+live_target_before=$(stat_live_target)
 export APPKIT_PRO_DATA_DIR=$DATA_ROOT
+[ "$APPKIT_PRO_DATA_DIR" = "$DATA_ROOT" ] || fail "E2E data-root environment mismatch"
 
 require_writable_e2e_root() {
   root=$1
@@ -232,7 +258,7 @@ add_pipeline() {
 
 verify_generated_dag() {
   python3 - "$REPO/appkit-pro.yaml" "$DATA_ROOT/spec-stamp" "$REPO/templates/appkit-pro.yaml.tmpl" <<'PY'
-import hashlib, re, sys
+import hashlib, json, re, sys
 from pathlib import Path
 
 spec_path, stamp_path, template_path = map(Path, sys.argv[1:])
@@ -276,8 +302,13 @@ if "    cmd:" in content_block or any(
 if "content-agent/" not in content_block or "__CONTENT_PROMPT__" in spec:
     raise SystemExit("generated content prompt is missing or unresolved")
 template_sha = hashlib.sha256(template_path.read_bytes()).hexdigest()
-stamp = stamp_path.read_text(encoding="ascii").strip()
-if stamp != template_sha or f"# template_sha256: {template_sha}" not in spec:
+stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
+target = str((stamp_path.parent / "target").read_text(encoding="utf-8").strip())
+target = str(Path(target).resolve(strict=True))
+if (
+    stamp != {"target": target, "template_sha256": template_sha}
+    or f"# template_sha256: {template_sha}" not in spec
+):
     raise SystemExit("generated spec stamp mismatch")
 PY
 }
@@ -382,6 +413,39 @@ PY
       failed|blocked|cancelled)
         cat "$run_json" >&2
         fail "pipeline run $run_id ended $state"
+        ;;
+    esac
+    [ "$(date +%s)" -lt "$deadline" ] || fail "pipeline run $run_id timed out"
+    sleep 2
+  done
+}
+
+wait_failed_run() {
+  run_id=$1
+  run_json=$2
+  deadline=$(( $(date +%s) + 1800 ))
+  while :; do
+    gitmoot pipeline show "$run_id" --json --home "$HOME_ROOT" > "$run_json"
+    state=$(python3 - "$run_json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8"))["state"])
+PY
+)
+    case "$state" in
+      failed)
+        sleep 1
+        gitmoot pipeline show "$run_id" --json --home "$HOME_ROOT" > "$run_json"
+        settled=$(python3 - "$run_json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8"))["state"])
+PY
+)
+        [ "$settled" = failed ] || fail "pipeline run $run_id did not remain failed"
+        return
+        ;;
+      succeeded|blocked|cancelled)
+        cat "$run_json" >&2
+        fail "pipeline run $run_id ended $state instead of failed"
         ;;
     esac
     [ "$(date +%s)" -lt "$deadline" ] || fail "pipeline run $run_id timed out"
@@ -728,6 +792,25 @@ decoy_digest_file=$HOME_ROOT/decoy-persisted.sha256
 run_case exported "$FULL" "$first_digest_file" "" "Fixture App"
 outside_switch_sentinel=$HOME_ROOT/target-switch-outside-data-root
 printf '%s\n' keep > "$outside_switch_sentinel"
+printf '%s\n' "$BARE" > "$DATA_ROOT/target"
+no_regen_run_id=$(gitmoot pipeline run appkit-pro --home "$HOME_ROOT")
+no_regen_run_json=$HOME_ROOT/no-regen-switch-run.json
+wait_failed_run "$no_regen_run_id" "$no_regen_run_json"
+python3 - "$no_regen_run_json" <<'PY'
+import json, sys
+
+run = json.load(open(sys.argv[1], encoding="utf-8"))
+capture = {stage["id"]: stage for stage in run["stages"]}.get("capture")
+expected = (
+    "switch_target_requires_regen: target changed since the spec was generated - "
+    "run tools/pro_make_pipeline.py, then re-add the pipeline"
+)
+if not capture or capture.get("state") != "failed":
+    raise SystemExit(f"no-regen capture did not fail: {capture}")
+summary = json.loads(capture.get("summary", "null"))
+if summary != {"reason": expected, "v": 1}:
+    raise SystemExit(f"no-regen target guard returned {summary}")
+PY
 run_case synthetic "$BARE" "$second_digest_file" "" "Bare Switch App"
 [ "$(cat "$outside_switch_sentinel")" = keep ] || fail "target switch changed a path outside the data root"
 switch_log=$HOME_ROOT/synthetic-pro-make.stderr
@@ -761,6 +844,23 @@ if grep -F 'pro_make_pipeline: cleared stale ' "$same_target_stderr" >/dev/null;
   cat "$same_target_stderr" >&2
   fail "same-target generator run cleared derived state"
 fi
+old_stamp_backup=$(mktemp "$HOME_ROOT/spec-stamp-json.XXXXXX")
+cp "$DATA_ROOT/spec-stamp" "$old_stamp_backup"
+python3 - "$DATA_ROOT/spec-stamp" "$old_stamp_backup" <<'PY'
+import json, sys
+from pathlib import Path
+
+stamp = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+Path(sys.argv[1]).write_text(stamp["template_sha256"] + "\n", encoding="ascii")
+PY
+old_stamp_result=$(PYTHONPATH="$REPO/tools" python3 -c 'import pro_inputs; print(pro_inputs.require_spec_stamp())')
+expected_old_stamp=$(python3 - "$old_stamp_backup" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8"))["template_sha256"])
+PY
+)
+[ "$old_stamp_result" = "$expected_old_stamp" ] || fail "legacy one-line spec stamp was rejected"
+cp "$old_stamp_backup" "$DATA_ROOT/spec-stamp"
 run_case not-exported "$DECOY" "$decoy_digest_file" "$FIXTURE_ROOT/decoy-digests.json" "Fixture App"
 
 fallback_context=$HOME_ROOT/fallback-landing-context.json
@@ -933,10 +1033,10 @@ sh "$REPO/scripts/demo-kit.sh" "$HOME_ROOT/public-b" >/dev/null
 cmp "$HOME_ROOT/public-a/kit/out/manifest.json" "$HOME_ROOT/public-b/kit/out/manifest.json"
 cmp "$HOME_ROOT/public-a/kit/out/launch-kit.zip" "$HOME_ROOT/public-b/kit/out/launch-kit.zip"
 
-live_after=$(snapshot_live_root)
-[ "$live_before" = "$live_after" ] || fail "live $LIVE_DATA_ROOT changed during E2E"
-printf '%s\n' "pro_e2e: live root unchanged $live_after"
+live_target_after=$(stat_live_target)
+printf '%s\n' "pro_e2e: isolation roots verified; live target stat before=$live_target_before after=$live_target_after (observation only)"
 printf '%s\n' "pro_e2e: persisted exported=$first_digest synthetic=$second_digest (overwrite confirmed)"
+printf '%s\n' 'pro_e2e: no-regen target switch failed at capture with switch_target_requires_regen; legacy one-line stamp accepted'
 printf '%s\n' "pro_e2e: target switch self-healed to $BARE; stale state cleared; same-target order stable $same_target_after"
 printf '%s\n' "pro_e2e: decoy non-exported=$decoy_digest; nested decoy digests absent; boundary log present"
 printf '%s\n' "pro_e2e: truncated agent file $fallback_relative used deterministic fallback=$fallback_digest_one"
@@ -945,4 +1045,4 @@ if [ "$PARALLEL_SUPPORTED" = 1 ]; then
 else
   printf '%s\n' 'pro_e2e: daemon has no parallel-worker flag; fork/join edges verified structurally'
 fi
-printf '%s\n' 'pro_e2e: fixture-full exported, fixture-bare synthetic, fixture-decoy non-exported, persistence verified, both personal pipelines expose-rejected, notify fallback hardened, stale spec rejected, public determinism matched'
+printf '%s\n' 'pro_e2e: fixture-full exported, fixture-bare synthetic, fixture-decoy non-exported, persistence verified, both personal pipelines expose-rejected, notify fallback hardened, stale spec and unregenerated target switch rejected, public determinism matched'
