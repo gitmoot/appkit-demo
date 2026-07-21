@@ -1,4 +1,22 @@
-# Appkit Demo
+# Gitmoot app-launch-kit pipelines
+
+This repo holds the two Gitmoot pipelines from the OpenAI Build Week demo, plus their tools,
+templates, and e2e.
+
+## appkit-pro (the one in the video)
+
+A personal pipeline that turns a real app repo into a launch kit with one prompt. The graph:
+`derive` (a Codex agent reads the repo and derives the app identity, with citations), then a
+fork that runs in parallel: `capture` (builds the app's web target and screenshots the REAL
+screens) alongside `content` (a Codex agent writes the store copy), joining into `compose-real`,
+`landing`, and `kit`. A chained pipeline (`appkit-notify-pro`) delivers the finished kit to
+Telegram. Because it reads repos, gitmoot refuses to expose it as a service by design: that is
+the two-trust-level model, not a limitation. Spec template: `templates/appkit-pro.yaml.tmpl`;
+generate with `tools/pro_make_pipeline.py`.
+
+Live runs: <https://gitmoot.themartian.app/pipelines/appkit-pro>
+
+## appkit-demo (the exposable service twin)
 
 Appkit Demo is a deterministic, shell-only Gitmoot pipeline that turns a small typed input object into a ready-to-use app launch kit. It produces device-framed 1290×2796 marketing images, transparent device renders, English and Italian App Store copy, a responsive static landing page, hosted and editable legal documents, app icons, an Open Graph image, a handoff guide, a byte manifest, and a reproducible ZIP.
 
