@@ -33,8 +33,8 @@ class VerificationError(RuntimeError):
     pass
 
 
-MAX_OUTPUT_BYTES = 15 * 1024 * 1024
-MAX_ZIP_BYTES = 20 * 1024 * 1024
+MAX_OUTPUT_BYTES = 48 * 1024 * 1024
+MAX_ZIP_BYTES = 56 * 1024 * 1024
 
 
 def _expected_relpaths(values: dict[str, object]) -> list[str]:

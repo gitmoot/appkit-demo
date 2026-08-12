@@ -156,9 +156,23 @@ def _reconcile_derived_state(target: Path, configured_root: Path) -> None:
             sys.stderr.write(f"pro_make_pipeline: cleared stale {name}\n")
 
 
+def _pipeline_name() -> str:
+    """The registry name for this render. Defaults to `appkit-pro` so the original
+    single-target behaviour is unchanged; set APPKIT_PRO_NAME (with a matching
+    APPKIT_PRO_DATA_DIR) to render an ISOLATED per-target instance — e.g.
+    `appkit-herdrup` on its own data root — without disturbing another app's
+    pipeline or its kit."""
+    name = os.environ.get("APPKIT_PRO_NAME", "appkit-pro").strip()
+    if not name or not all(ch.isalnum() or ch in "-_" for ch in name):
+        raise RuntimeError("APPKIT_PRO_NAME must be alphanumeric with - or _")
+    return name
+
+
 def main() -> None:
     target = pro_inputs.load_target()
     data_root = pro_inputs.data_root()
+    pipeline_name = _pipeline_name()
+    output = ROOT / f"{pipeline_name}.yaml"
     _reconcile_derived_state(target, data_root)
     template = _read(TEMPLATE)
     template_sha256 = hashlib.sha256(TEMPLATE.read_bytes()).hexdigest()
@@ -170,6 +184,7 @@ def main() -> None:
         or template.count("__DERIVE_PROMPT__") != 1
         or template.count("__CONTENT_PROMPT__") != 1
         or template.count("__SPEC_SHA256__") != 1
+        or template.count("__PIPELINE_NAME__") != 1
         or prompt.count("__DATA_ROOT__") != 2
         or prompt.count("__TARGET_REPO__") != 1
         or content_prompt.count("__DATA_ROOT__") != 1
@@ -187,12 +202,13 @@ def main() -> None:
     rendered = rendered.replace("__DERIVE_PROMPT__", prompt_block)
     rendered = rendered.replace("__CONTENT_PROMPT__", content_prompt_block)
     rendered = rendered.replace("__SPEC_SHA256__", template_sha256)
-    temporary = OUTPUT.with_name(OUTPUT.name + ".tmp")
-    if OUTPUT.is_symlink() or temporary.is_symlink():
+    rendered = rendered.replace("__PIPELINE_NAME__", pipeline_name)
+    temporary = output.with_name(output.name + ".tmp")
+    if output.is_symlink() or temporary.is_symlink():
         raise RuntimeError("pipeline output path is unsafe")
     temporary.write_text(rendered, encoding="utf-8", newline="\n")
     os.chmod(temporary, 0o600)
-    temporary.replace(OUTPUT)
+    temporary.replace(output)
     pro_inputs.atomic_write_text(
         data_root / pro_inputs.SPEC_STAMP_FILE,
         json.dumps(
@@ -206,7 +222,7 @@ def main() -> None:
         )
         + "\n",
     )
-    print(str(OUTPUT))
+    print(str(output))
 
 
 if __name__ == "__main__":

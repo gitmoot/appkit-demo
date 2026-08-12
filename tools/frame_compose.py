@@ -33,7 +33,7 @@ CONTENT_TOP = ISLAND_RECT[3] + ISLAND_CLEARANCE
 BG_BASE = (14, 14, 18, 255)
 PHONE_W_FRAC = 0.82
 PHONE_TOP_FRAC = 0.205
-HEAD_TOP_FRAC = 0.066
+HEAD_TOP_FRAC = 0.12
 HEAD_COLOR = (245, 245, 250, 255)
 
 
@@ -138,6 +138,59 @@ def _fit_text(
     return rendered, font
 
 
+def _line_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont) -> int:
+    box = draw.textbbox((0, 0), text, font=font)
+    return box[2] - box[0]
+
+
+def _best_two_line_split(
+    draw: ImageDraw.ImageDraw,
+    words: list[str],
+    font: ImageFont.FreeTypeFont,
+    maximum: int,
+) -> list[str] | None:
+    """Split words into two balanced lines that both fit `maximum`, or None."""
+    best: tuple[int, list[str]] | None = None
+    for cut in range(1, len(words)):
+        first = " ".join(words[:cut])
+        second = " ".join(words[cut:])
+        w1 = _line_width(draw, first, font)
+        w2 = _line_width(draw, second, font)
+        if w1 <= maximum and w2 <= maximum:
+            imbalance = abs(w1 - w2)
+            if best is None or imbalance < best[0]:
+                best = (imbalance, [first, second])
+    return best[1] if best else None
+
+
+def _fit_headline(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    maximum: int,
+    start: int,
+    minimum: int,
+) -> tuple[list[str], ImageFont.FreeTypeFont]:
+    """Fit a headline as one line if it fits, else wrap to a balanced two lines,
+    shrinking the font until it fits. Keeps captions inside the margin at a
+    comfortable size instead of stretching one line edge-to-edge."""
+    words = text.split()
+    size = start
+    while size >= minimum:
+        font = _font(size)
+        if _line_width(draw, text, font) <= maximum:
+            return [text], font
+        if len(words) > 1:
+            wrapped = _best_two_line_split(draw, words, font, maximum)
+            if wrapped is not None:
+                return wrapped, font
+        size = max(minimum, size - 2)
+        if size == minimum and _line_width(draw, text, _font(size)) > maximum:
+            break
+    # Last resort: single line at the minimum, truncated by the existing fitter.
+    rendered, font = _fit_text(draw, text, maximum, minimum, minimum)
+    return [rendered], font
+
+
 def compose(screen: Image.Image, headline: str, brand_color: str) -> Image.Image:
     verify_assets()
     canvas = build_background(brand_color)
@@ -152,13 +205,23 @@ def compose(screen: Image.Image, headline: str, brand_color: str) -> Image.Image
     canvas.alpha_composite(phone, (phone_x, phone_y))
 
     draw = ImageDraw.Draw(canvas)
-    max_width = int(CANVAS_W * 0.86)
-    rendered_headline, font = _fit_text(draw, headline, max_width, 132, 18)
-    box = draw.textbbox((0, 0), rendered_headline, font=font)
-    width = box[2] - box[0]
-    x = (CANVAS_W - width) // 2 - box[0]
-    y = int(CANVAS_H * HEAD_TOP_FRAC) - box[1]
-    draw.text((x, y), rendered_headline, fill=HEAD_COLOR, font=font)
+    # Tighter margin (0.80) and a lower start size (108) than the old single-line
+    # fitter, so a long caption wraps to two balanced lines rather than stretching
+    # cramped across the full width.
+    max_width = int(CANVAS_W * 0.80)
+    lines, font = _fit_headline(draw, headline, max_width, 108, 40)
+    ascent, descent = font.getmetrics()
+    line_height = ascent + descent + 10
+    total_height = line_height * len(lines)
+    top = int(CANVAS_H * HEAD_TOP_FRAC)
+    # Keep the block roughly centered on the old single-line baseline.
+    y = top - (total_height - line_height) // 2
+    for line in lines:
+        box = draw.textbbox((0, 0), line, font=font)
+        width = box[2] - box[0]
+        x = (CANVAS_W - width) // 2 - box[0]
+        draw.text((x, y - box[1]), line, fill=HEAD_COLOR, font=font)
+        y += line_height
     return canvas.convert("RGB")
 
 
