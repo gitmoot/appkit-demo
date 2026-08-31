@@ -1,7 +1,7 @@
 # appkit-notify-pro: INTERNAL personal chain. Its secrets and network access
 # deliberately make it ineligible for the public expose seam.
 name: appkit-notify-pro
-repo: gitmoot/appkit-demo
+repo: themartianapp/appkit-demo
 description: Sends the persistent personal appkit-pro launch kit to the operator.
 env_file: /root/.config/gitmoot/appkit-notify.env
 trigger:

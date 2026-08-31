@@ -215,11 +215,11 @@ digest_path.write_text(
 PY
 
 mkdir -p "$HOME_ROOT"
-gitmoot repo add gitmoot/appkit-demo --path "$REPO" --home "$HOME_ROOT" >/dev/null
+gitmoot repo add themartianapp/appkit-demo --path "$REPO" --home "$HOME_ROOT" >/dev/null
 gitmoot agent start appkit-deriver \
   --home "$HOME_ROOT" \
   --runtime codex \
-  --repo gitmoot/appkit-demo \
+  --repo themartianapp/appkit-demo \
   --path "$REPO" \
   --role implementer \
   --capability produce \

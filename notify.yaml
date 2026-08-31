@@ -2,7 +2,7 @@
 # the operator's Telegram. Secrets via env_file (#968) — which is exactly why this lives in a
 # separate pipeline: stages with env_keys/network are unexposable by design.
 name: appkit-notify
-repo: gitmoot/appkit-demo
+repo: themartianapp/appkit-demo
 description: Notifies the operator on Telegram whenever the exposed appkit-demo pipeline serves an order, with the public receipt link.
 env_file: /root/.config/gitmoot/appkit-notify.env
 trigger:
