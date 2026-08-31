@@ -183,36 +183,43 @@ def _bullet_texts(lines: list[str]) -> list[str]:
     return list(seen)
 
 
-def _feature_bullets(lines: list[str], heading: str) -> list[str]:
-    """Distinct items in the list the localized heading introduces.
+def _feature_bullets(
+    lines: list[str], heading: str, support_email: str
+) -> list[str]:
+    """Distinct items in the list a standalone localized heading introduces.
 
-    Counting item-led lines anywhere in the body let stray hyphen-led prose
-    and an unrelated numbered section stand in for a feature list nobody
-    wrote: the marker set says "this line is an item", which is not the same
-    claim as "this description has a feature list". The list is the run the
-    heading introduces, so that run is what gets counted. Blank lines inside
-    it are tolerated because authors space their lists; the first line that is
-    neither blank nor an item ends it.
+    A heading phrase inside prose is not a heading: accepting it let an
+    unrelated numbered section supply a feature list nobody wrote. Match the
+    normalized line exactly, then allow the hook's introductory prose before
+    the list begins; content-prompt.md requires the heading and bullets but
+    does not require immediate adjacency. The required support email marks
+    the closing CTA, so a list found after it cannot supply the feature list.
+    Once the list starts, the first non-item ends it.
 
-    Structure cannot tell a feature list from any other list occupying the
-    same slot, so a numbered administrative list written directly under the
-    heading still counts. Deciding that needs the text's meaning, not its
-    shape.
+    Structure still cannot distinguish an administrative list written under a
+    real standalone heading from feature bullets. That needs the text's
+    meaning, not its shape.
     """
 
     start = None
     for index, line in enumerate(lines):
-        if heading in line:
+        if line.strip() == heading:
             start = index + 1
             break
     if start is None:
         return []
     run: list[str] = []
+    started = False
     for line in lines[start:]:
+        if support_email in line:
+            break
         if not line.strip():
             continue
         if _bullet_payload(line) is None:
-            break
+            if started:
+                break
+            continue
+        started = True
         run.append(line)
     return _bullet_texts(run)
 
@@ -263,8 +270,10 @@ def _validate_copy(
     heading = DESCRIPTION_HEADINGS.get(locale)
     if heading is None:
         return "description_locale"
-    if heading not in body or len(
-        _feature_bullets(body.splitlines(), heading)
+    if len(
+        _feature_bullets(
+            body.splitlines(), heading, str(values["support_email"])
+        )
     ) < MIN_BULLETS:
         return "description_structure"
     return None

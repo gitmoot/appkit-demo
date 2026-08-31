@@ -157,7 +157,7 @@ def _with_list(items):
     out = []
     for line in _without_list:
         out.append(line)
-        if heading_en in line:
+        if line.strip() == heading_en:
             out.extend(items)
     return "\n".join(out) + "\n"
 
@@ -184,6 +184,36 @@ structure_rejections = {
     "items_below_letter_floor": _with_list(["- 4K", "- HD", "- 5G"]),
     "too_few_items": _with_list(["- One good thing", "- Another good thing"]),
 }
+_phrase_only_admin_before_cta = []
+for line in _without_list:
+    if line.strip() == heading_en:
+        _phrase_only_admin_before_cta.extend(
+            [
+                f"This sentence mentions {heading_en}, but it is not a heading.",
+                "1. Privacy Policy",
+                "2. Terms of Service",
+                "3. Contact Support",
+            ]
+        )
+    else:
+        _phrase_only_admin_before_cta.append(line)
+_phrase_only_admin_before_cta = (
+    "\n".join(_phrase_only_admin_before_cta) + "\n"
+)
+_interleaved_prose = _with_list(
+    [
+        "- One good thing",
+        "- Another good thing",
+        "This explanatory sentence interrupts the list.",
+        "- A third good thing",
+    ]
+)
+structure_rejections.update(
+    {
+        "phrase_only_admin_before_closing_cta": _phrase_only_admin_before_cta,
+        "prose_interleaved_after_list_starts": _interleaved_prose,
+    }
+)
 for _name, _text in structure_rejections.items():
     _reason = pro_agent_content._validate_copy(
         "copy/en/description.txt", _text, values
@@ -206,6 +236,40 @@ if (
     is not None
 ):
     raise SystemExit("rebuilt feature list rejected: structure cases prove nothing")
+
+# HEADING IDENTITY AND DISTANCE. The phrase inside a sentence is not a
+# heading, and the prompt requires the heading and bullets but does not demand
+# immediate adjacency. These direct cases reproduce the exact-head review's
+# false positive and two false rejections.
+_phrase_only_admin = "\n".join(
+    (
+        f"This sentence mentions {heading_en}, but it is not a heading."
+        if line.strip() == heading_en
+        else line
+    )
+    for line in _without_list
+) + "\n\n1. Privacy Policy\n2. Terms of Service\n3. Contact Support\n"
+_intro_before_list = descriptions["en"].replace(
+    heading_en + "\n",
+    heading_en + "\nHere are three grounded highlights from Example App:\n",
+    1,
+)
+_earlier_phrase = (
+    f"This opening mentions {heading_en} before the feature heading.\n"
+    + descriptions["en"]
+)
+for _name, _text, _expected in (
+    ("phrase_only_admin", _phrase_only_admin, "description_structure"),
+    ("intro_before_list", _intro_before_list, None),
+    ("earlier_phrase_before_heading", _earlier_phrase, None),
+):
+    _reason = pro_agent_content._validate_copy(
+        "copy/en/description.txt", _text, values
+    )
+    if _reason != _expected:
+        raise SystemExit(
+            f"{_name}: expected {_expected!r}, got {_reason!r}"
+        )
 PY
 
 # ENTRY PATH. Every case above calls _validate_copy directly, one level below
@@ -296,6 +360,86 @@ _check(
     _swap("\u2014"),
     pro_agent_content.FALLBACK_SOURCE,
     "forbidden_character",
+)
+
+# Same heading cases through inspect(), the production entry path.
+heading = pro_agent_content.DESCRIPTION_HEADINGS["en"]
+phrase_only_admin = "\n".join(
+    (
+        f"This sentence mentions {heading}, but it is not a heading."
+        if line.strip() == heading
+        else line
+    )
+    for line in without_list
+) + "\n\n1. Privacy Policy\n2. Terms of Service\n3. Contact Support\n"
+intro_before_list = valid_en.replace(
+    heading + "\n",
+    heading + "\nHere are three grounded highlights from Example App:\n",
+    1,
+)
+earlier_phrase = (
+    f"This opening mentions {heading} before the feature heading.\n" + valid_en
+)
+_check(
+    "heading phrase in prose plus administrative list",
+    phrase_only_admin,
+    pro_agent_content.FALLBACK_SOURCE,
+    "description_structure",
+)
+_check(
+    "intro between standalone heading and list",
+    intro_before_list,
+    pro_agent_content.AGENT_SOURCE,
+    "",
+)
+_check(
+    "earlier phrase before standalone heading",
+    earlier_phrase,
+    pro_agent_content.AGENT_SOURCE,
+    "",
+)
+
+# These two cases kill the identity and list-end mutations independently of
+# the closing-CTA boundary: the faux heading and the interrupted list both
+# occur before the support email.
+phrase_only_admin_before_cta = []
+for line in without_list:
+    if line.strip() == heading:
+        phrase_only_admin_before_cta.extend(
+            [
+                f"This sentence mentions {heading}, but it is not a heading.",
+                "1. Privacy Policy",
+                "2. Terms of Service",
+                "3. Contact Support",
+            ]
+        )
+    else:
+        phrase_only_admin_before_cta.append(line)
+phrase_only_admin_before_cta = "\n".join(phrase_only_admin_before_cta) + "\n"
+interleaved_prose = []
+for line in without_list:
+    interleaved_prose.append(line)
+    if line.strip() == heading:
+        interleaved_prose.extend(
+            [
+                "- One good thing",
+                "- Another good thing",
+                "This explanatory sentence interrupts the list.",
+                "- A third good thing",
+            ]
+        )
+interleaved_prose = "\n".join(interleaved_prose) + "\n"
+_check(
+    "heading phrase plus admin list before closing CTA",
+    phrase_only_admin_before_cta,
+    pro_agent_content.FALLBACK_SOURCE,
+    "description_structure",
+)
+_check(
+    "prose interrupts the feature list",
+    interleaved_prose,
+    pro_agent_content.FALLBACK_SOURCE,
+    "description_structure",
 )
 PY
 
