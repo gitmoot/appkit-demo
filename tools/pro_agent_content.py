@@ -16,6 +16,11 @@ AGENT_SOURCE = "agent"
 FALLBACK_SOURCE = "deterministic-fallback"
 MAX_FILE_BYTES = 64 * 1024
 
+DESCRIPTION_HEADINGS = {
+    "en": "WHY YOU'LL LOVE IT",
+    "it": "PERCHÉ TI PIACERÀ",
+}
+
 
 @dataclass(frozen=True)
 class AgentContent:
@@ -161,7 +166,9 @@ def _validate_copy(
     if any(value not in body for value in required):
         return "grounding_missing"
     locale = Path(relative).parts[1]
-    heading = "WHY YOU'LL LOVE IT" if locale == "en" else "PERCHÉ TI PIACERÀ"
+    heading = DESCRIPTION_HEADINGS.get(locale)
+    if heading is None:
+        return "description_locale"
     if heading not in body or sum(
         line.lstrip().startswith("•") for line in body.splitlines()
     ) < 3:
