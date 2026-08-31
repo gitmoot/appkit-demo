@@ -112,9 +112,14 @@ from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
-if path.stat().st_size > 1024 * 1024:
+try:
+    if path.stat().st_size > 1024 * 1024:
+        raise ValueError
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(2) from None
+if not isinstance(manifest, dict):
     raise SystemExit(2)
-manifest = json.loads(path.read_text(encoding="utf-8"))
 provenance = manifest.get("content_provenance")
 if not isinstance(provenance, dict) or any(
     not isinstance(key, str)

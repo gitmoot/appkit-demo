@@ -76,6 +76,13 @@ run_notify() {
   grep -F '"decision":"approved"' "$TMP/notify.stdout" >/dev/null
 }
 
+assert_unavailable() {
+  grep -F 'content provenance unavailable' "$MOCK_CURL_ARGS" >/dev/null || {
+    printf '%s\n' 'unknown provenance was reported as a clean notification' >&2
+    exit 1
+  }
+}
+
 cat > "$TMP/data/kit/manifest.json" <<'JSON'
 {"content_provenance":{"copy/en/description.txt":"agent","copy/it/description.txt":"agent"}}
 JSON
@@ -84,11 +91,19 @@ if grep -F 'content fallbacks:' "$MOCK_CURL_ARGS" >/dev/null; then
   printf '%s\n' 'clean notification was incorrectly marked as fallback' >&2
   exit 1
 fi
+if grep -F 'content provenance unavailable' "$MOCK_CURL_ARGS" >/dev/null; then
+  printf '%s\n' 'clean notification was incorrectly marked as unknown provenance' >&2
+  exit 1
+fi
 
 cat > "$TMP/data/kit/manifest.json" <<'JSON'
 {"content_provenance":{"copy/en/description.txt":"agent","copy/it/description.txt":"deterministic-fallback"}}
 JSON
 run_notify
+if grep -F 'content provenance unavailable' "$MOCK_CURL_ARGS" >/dev/null; then
+  printf '%s\n' 'fallback notification was incorrectly marked as unknown provenance' >&2
+  exit 1
+fi
 grep -F 'content fallbacks: 1' "$MOCK_CURL_ARGS" >/dev/null || {
   printf '%s\n' 'fallback notification omitted its visible count' >&2
   exit 1
@@ -96,9 +111,24 @@ grep -F 'content fallbacks: 1' "$MOCK_CURL_ARGS" >/dev/null || {
 
 printf '%s\n' '{}' > "$TMP/data/kit/manifest.json"
 run_notify
-grep -F 'content provenance unavailable' "$MOCK_CURL_ARGS" >/dev/null || {
-  printf '%s\n' 'invalid provenance was reported as a clean notification' >&2
+assert_unavailable
+
+rm "$TMP/data/kit/manifest.json"
+run_notify
+assert_unavailable
+
+printf '%s\n' '{}' > "$TMP/data/kit/manifest-target.json"
+ln -s manifest-target.json "$TMP/data/kit/manifest.json"
+run_notify
+assert_unavailable
+
+rm "$TMP/data/kit/manifest.json"
+printf '%s\n' 'not-json' > "$TMP/data/kit/manifest.json"
+run_notify
+assert_unavailable
+if grep -F 'Traceback' "$TMP/notify.stderr" >/dev/null; then
+  printf '%s\n' 'malformed provenance printed a Python traceback' >&2
   exit 1
-}
+fi
 
 printf '%s\n' 'content_validation: valid descriptions accepted, malformed locales rejected, fallbacks surfaced'
