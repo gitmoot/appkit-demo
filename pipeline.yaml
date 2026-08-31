@@ -1,5 +1,5 @@
 name: appkit-demo
-repo: gitmoot/appkit-demo
+repo: themartianapp/appkit-demo
 description: Deterministically builds and verifies a complete app launch kit from bounded typed inputs.
 stages:
   - id: compose
