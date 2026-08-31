@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import stat
 import unicodedata
 from dataclasses import dataclass
@@ -20,6 +21,26 @@ DESCRIPTION_HEADINGS = {
     "en": "WHY YOU'LL LOVE IT",
     "it": "PERCHÉ TI PIACERÀ",
 }
+
+# Bullet markers as shipped store copy actually writes them. The content
+# prompt asks for `• `, but hyphen and en dash are the dominant App Store
+# convention and `* `, middot, and `1. ` all appear in real listings.
+# Accepting U+2022 alone repeated the original defect from the other side: a
+# correct translated description was rejected for using the marker its own
+# market writes. Which locale the text belongs to is still decided by the
+# exact localized heading, never by the marker; the marker only has to say
+# "this line is an item".
+#
+# Unambiguous glyphs stand alone (`•Text` was already accepted and stays
+# accepted). Characters that also occur as prose punctuation, and ordered
+# numbers, require the following space that makes them a list marker rather
+# than a hyphenated word ("-based") or a decimal ("1.5 million").
+_BULLET_GLYPHS = "\u2022\u2023\u2043\u25aa\u25a0\u25cf\u25e6"
+_AMBIGUOUS_BULLETS = "-\u2013*+\u00b7"
+_BULLET_SPACES = (" ", "\t", "\u00a0")
+_ORDERED_BULLET_RE = re.compile(r"^\d{1,2}[.)](?=[ \t\u00a0])")
+MIN_BULLETS = 3
+MIN_BULLET_LETTERS = 3
 
 
 @dataclass(frozen=True)
@@ -123,6 +144,43 @@ def _valid_keywords(body: str) -> bool:
     return len(folded) == len(set(folded))
 
 
+def _bullet_payload(line: str) -> str | None:
+    """The text after a list marker, or None when the line is not an item."""
+
+    stripped = line.lstrip()
+    if not stripped:
+        return None
+    if stripped[0] in _BULLET_GLYPHS:
+        return stripped[1:].strip()
+    if stripped[0] in _AMBIGUOUS_BULLETS and stripped[1:2] in _BULLET_SPACES:
+        return stripped[2:].strip()
+    ordered = _ORDERED_BULLET_RE.match(stripped)
+    if ordered is not None:
+        return stripped[ordered.end() :].strip()
+    return None
+
+
+def _bullet_texts(lines: list[str]) -> list[str]:
+    """Distinct bullet payloads that actually say something.
+
+    Widening the marker set without this would loosen the guard rather than
+    correct it: three bare `- ` lines, or `* X` repeated, satisfy a plain
+    marker count while saying nothing. Requiring distinct payloads with real
+    letters keeps the widening from trading one silent-acceptance defect for
+    another.
+    """
+
+    seen: dict[str, None] = {}
+    for line in lines:
+        payload = _bullet_payload(line)
+        if payload is None:
+            continue
+        if sum(character.isalpha() for character in payload) < MIN_BULLET_LETTERS:
+            continue
+        seen.setdefault(payload.casefold(), None)
+    return list(seen)
+
+
 def _validate_copy(
     relative: str, text: str, values: dict[str, object]
 ) -> str | None:
@@ -169,9 +227,7 @@ def _validate_copy(
     heading = DESCRIPTION_HEADINGS.get(locale)
     if heading is None:
         return "description_locale"
-    if heading not in body or sum(
-        line.lstrip().startswith("•") for line in body.splitlines()
-    ) < 3:
+    if heading not in body or len(_bullet_texts(body.splitlines())) < MIN_BULLETS:
         return "description_structure"
     return None
 
