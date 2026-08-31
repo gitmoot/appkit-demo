@@ -100,6 +100,44 @@ else
   CAPTION="appkit-pro built a kit (run ${RID})"
 fi
 KIT="$DATA_ROOT/kit/launch-kit.zip"
+MANIFEST="$DATA_ROOT/kit/manifest.json"
+CONTENT_FALLBACKS=''
+if [ -f "$MANIFEST" ] && [ ! -L "$MANIFEST" ]; then
+  if CONTENT_FALLBACKS=$(python3 - "$MANIFEST" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+if path.stat().st_size > 1024 * 1024:
+    raise SystemExit(2)
+manifest = json.loads(path.read_text(encoding="utf-8"))
+provenance = manifest.get("content_provenance")
+if not isinstance(provenance, dict) or any(
+    not isinstance(key, str)
+    or source not in ("agent", "deterministic-fallback")
+    for key, source in provenance.items()
+):
+    raise SystemExit(2)
+print(sum(source == "deterministic-fallback" for source in provenance.values()))
+PY
+  ); then
+    case "$CONTENT_FALLBACKS" in
+      ''|*[!0-9]*)
+        CONTENT_FALLBACKS=''
+        printf '%s\n' 'notify-pro: persisted content provenance is invalid' >&2
+        ;;
+      0) ;;
+      *)
+        CAPTION="${CAPTION} (content fallbacks: ${CONTENT_FALLBACKS})"
+        printf '%s\n' "notify-pro: surfacing ${CONTENT_FALLBACKS} deterministic content fallback(s)" >&2
+        ;;
+    esac
+  else
+    CONTENT_FALLBACKS=''
+    printf '%s\n' 'notify-pro: persisted content provenance is invalid' >&2
+  fi
+fi
 
 telegram_config() {
   endpoint=$1
