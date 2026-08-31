@@ -117,7 +117,7 @@ rm "$TMP/data/kit/manifest.json"
 run_notify
 assert_unavailable
 
-printf '%s\n' '{}' > "$TMP/data/kit/manifest-target.json"
+printf '%s\n' '{"content_provenance":{"copy/en/description.txt":"agent"}}' > "$TMP/data/kit/manifest-target.json"
 ln -s manifest-target.json "$TMP/data/kit/manifest.json"
 run_notify
 assert_unavailable
