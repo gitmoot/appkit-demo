@@ -208,6 +208,97 @@ if (
     raise SystemExit("rebuilt feature list rejected: structure cases prove nothing")
 PY
 
+# ENTRY PATH. Every case above calls _validate_copy directly, one level below
+# its only production caller. A mutant that stopped inspect() acting on a
+# validation reason would leave all of them green, so these cases drive
+# inspect() and assert the observable it actually produces: an accepted file
+# carries AGENT_SOURCE and keeps its payload, a rejected one carries
+# FALLBACK_SOURCE, the reason code, and no payload.
+mkdir -p "$TMP/prodata/content-agent/copy/en" "$TMP/entry"
+APPKIT_PRO_DATA_DIR="$TMP/prodata" PYTHONPATH="$REPO/tools" python3 - "$TMP" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+import inputs
+import pro_agent_content
+import render
+
+tmp = Path(sys.argv[1])
+values = inputs.validate_inputs({"app_name": "Example App"})
+os.chdir(tmp / "entry")
+Path("out").mkdir(exist_ok=True)
+render.render_copy(values)
+valid_en = Path("out/copy/en/description.txt").read_text(encoding="utf-8")
+
+key = "copy/en/description.txt"
+target = Path(os.environ["APPKIT_PRO_DATA_DIR"]) / "content-agent" / key
+lines = valid_en.splitlines()
+without_list = [
+    line for line in lines if pro_agent_content._bullet_payload(line) is None
+]
+
+
+def _swap(marker):
+    out = []
+    for line in lines:
+        stripped = line.lstrip()
+        out.append(marker + stripped[1:] if stripped.startswith("\u2022") else line)
+    return "\n".join(out) + "\n"
+
+
+def _check(label, text, want_source, want_reason):
+    target.write_text(text, encoding="utf-8")
+    content = pro_agent_content.inspect(values)
+    source = content.provenance.get(key)
+    reason = content.reasons.get(key, "")
+    if source != want_source or reason != want_reason:
+        raise SystemExit(
+            f"entry path {label}: provenance={source!r} reason={reason!r}, "
+            f"wanted {want_source!r} / {want_reason!r}"
+        )
+    if want_source == pro_agent_content.AGENT_SOURCE and key not in content.payloads:
+        raise SystemExit(f"entry path {label}: accepted but the payload was dropped")
+    if want_source == pro_agent_content.FALLBACK_SOURCE and key in content.payloads:
+        raise SystemExit(f"entry path {label}: rejected but the payload was retained")
+
+
+_check("shipped U+2022 list", valid_en, pro_agent_content.AGENT_SOURCE, "")
+_check("hyphen list", _swap("-"), pro_agent_content.AGENT_SOURCE, "")
+_check("checkmark list", _swap("\u2713"), pro_agent_content.AGENT_SOURCE, "")
+_check(
+    "hyphen prose outside the list",
+    "\n".join(
+        without_list
+        + [
+            "",
+            "- and it keeps working quietly in the background while you are online",
+            "- because the details matter more than another settings screen does",
+            "- so that the next step in front of you is always the obvious one",
+        ]
+    )
+    + "\n",
+    pro_agent_content.FALLBACK_SOURCE,
+    "description_structure",
+)
+# An excluded marker reaches the validator and comes back as structure. Arrow,
+# not em dash: _safe_text:122 rejects U+2014 anywhere in agent content, so an
+# em-dash description is refused a layer above and the marker set never sees
+# it. Both layers are asserted so neither can quietly stop working.
+_check(
+    "arrow outside the marker set",
+    _swap("\u2192"),
+    pro_agent_content.FALLBACK_SOURCE,
+    "description_structure",
+)
+_check(
+    "em dash refused upstream of the validator",
+    _swap("\u2014"),
+    pro_agent_content.FALLBACK_SOURCE,
+    "forbidden_character",
+)
+PY
+
 mkdir -p "$TMP/bin" "$TMP/data/kit"
 cat > "$TMP/bin/curl" <<'SH'
 #!/bin/sh
@@ -285,4 +376,4 @@ if grep -F 'Traceback' "$TMP/notify.stderr" >/dev/null; then
   exit 1
 fi
 
-printf '%s\n' 'content_validation: valid descriptions accepted, every accepted marker asserted, excluded markers held out, stray prose and unrelated sections rejected as structure, malformed locales rejected, fallbacks surfaced'
+printf '%s\n' 'content_validation: valid descriptions accepted, every accepted marker asserted, excluded markers held out, stray prose and unrelated sections rejected as structure, inspect() entry path asserted for provenance/reason/payload, malformed locales rejected, fallbacks surfaced'
