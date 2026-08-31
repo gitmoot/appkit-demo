@@ -32,10 +32,12 @@ DESCRIPTION_HEADINGS = {
 # "this line is an item".
 #
 # Unambiguous glyphs stand alone (`•Text` was already accepted and stays
-# accepted). Characters that also occur as prose punctuation, and ordered
-# numbers, require the following space that makes them a list marker rather
-# than a hyphenated word ("-based") or a decimal ("1.5 million").
-_BULLET_GLYPHS = "\u2022\u2023\u2043\u25aa\u25a0\u25cf\u25e6"
+# accepted), and the checkmark family is here because a ✓-led feature list is
+# a real App Store convention that this validator was rejecting. Characters
+# that also occur as prose punctuation, and ordered numbers, require the
+# following space that makes them a list marker rather than a hyphenated word
+# ("-based") or a decimal ("1.5 million").
+_BULLET_GLYPHS = "\u2022\u2023\u2043\u25aa\u25a0\u25cf\u25e6\u2713\u2714\u2705"
 _AMBIGUOUS_BULLETS = "-\u2013*+\u00b7"
 _BULLET_SPACES = (" ", "\t", "\u00a0")
 _ORDERED_BULLET_RE = re.compile(r"^\d{1,2}[.)](?=[ \t\u00a0])")
@@ -181,6 +183,40 @@ def _bullet_texts(lines: list[str]) -> list[str]:
     return list(seen)
 
 
+def _feature_bullets(lines: list[str], heading: str) -> list[str]:
+    """Distinct items in the list the localized heading introduces.
+
+    Counting item-led lines anywhere in the body let stray hyphen-led prose
+    and an unrelated numbered section stand in for a feature list nobody
+    wrote: the marker set says "this line is an item", which is not the same
+    claim as "this description has a feature list". The list is the run the
+    heading introduces, so that run is what gets counted. Blank lines inside
+    it are tolerated because authors space their lists; the first line that is
+    neither blank nor an item ends it.
+
+    Structure cannot tell a feature list from any other list occupying the
+    same slot, so a numbered administrative list written directly under the
+    heading still counts. Deciding that needs the text's meaning, not its
+    shape.
+    """
+
+    start = None
+    for index, line in enumerate(lines):
+        if heading in line:
+            start = index + 1
+            break
+    if start is None:
+        return []
+    run: list[str] = []
+    for line in lines[start:]:
+        if not line.strip():
+            continue
+        if _bullet_payload(line) is None:
+            break
+        run.append(line)
+    return _bullet_texts(run)
+
+
 def _validate_copy(
     relative: str, text: str, values: dict[str, object]
 ) -> str | None:
@@ -227,7 +263,9 @@ def _validate_copy(
     heading = DESCRIPTION_HEADINGS.get(locale)
     if heading is None:
         return "description_locale"
-    if heading not in body or len(_bullet_texts(body.splitlines())) < MIN_BULLETS:
+    if heading not in body or len(
+        _feature_bullets(body.splitlines(), heading)
+    ) < MIN_BULLETS:
         return "description_structure"
     return None
 

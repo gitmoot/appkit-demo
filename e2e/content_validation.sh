@@ -52,6 +52,160 @@ expected = {
 }
 if checks != expected:
     raise SystemExit(f"description validation mismatch: {checks!r}")
+
+# MARKER COVERAGE. Everything above is built from the shipped templates, which
+# use U+2022 exclusively, so none of it can detect a regression in any other
+# marker: deleting "-" from _AMBIGUOUS_BULLETS left this suite green. These
+# cases drive _validate_copy directly, one per accepted marker, so removing
+# any single marker fails here.
+heading_en = pro_agent_content.DESCRIPTION_HEADINGS["en"]
+
+
+def _swap_markers(text, marker):
+    lines = []
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("\u2022"):
+            lines.append(marker + stripped[1:])
+        else:
+            lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
+def _numbered(text):
+    lines = []
+    index = 0
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("\u2022"):
+            index += 1
+            lines.append(f"{index}." + stripped[1:])
+        else:
+            lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
+accepted_markers = {
+    "u2022_bullet": "\u2022",
+    "u2023_triangular_bullet": "\u2023",
+    "u2043_hyphen_bullet": "\u2043",
+    "u25aa_small_black_square": "\u25aa",
+    "u25a0_black_square": "\u25a0",
+    "u25cf_black_circle": "\u25cf",
+    "u25e6_white_bullet": "\u25e6",
+    "u2713_check": "\u2713",
+    "u2714_heavy_check": "\u2714",
+    "u2705_emoji_check": "\u2705",
+    "hyphen": "-",
+    "u2013_en_dash": "\u2013",
+    "asterisk": "*",
+    "plus": "+",
+    "u00b7_middot": "\u00b7",
+}
+for _name, _marker in accepted_markers.items():
+    _reason = pro_agent_content._validate_copy(
+        "copy/en/description.txt", _swap_markers(descriptions["en"], _marker), values
+    )
+    if _reason is not None:
+        raise SystemExit(f"accepted marker {_name} rejected: {_reason}")
+
+if (
+    pro_agent_content._validate_copy(
+        "copy/en/description.txt", _numbered(descriptions["en"]), values
+    )
+    is not None
+):
+    raise SystemExit("ordered feature list rejected")
+
+# A glyph needs no following space; that was true before the widening and has
+# to stay true.
+if (
+    pro_agent_content._validate_copy(
+        "copy/en/description.txt",
+        _swap_markers(descriptions["en"], "\u2022").replace("\u2022 ", "\u2022"),
+        values,
+    )
+    is not None
+):
+    raise SystemExit("glyph without a following space rejected")
+
+# Markers deliberately left out of the set. Asserted so that widening the set
+# again is a decision somebody makes on purpose rather than a side effect.
+for _name, _marker in {
+    "u2014_em_dash": "\u2014",
+    "u2192_arrow": "\u2192",
+    "u00bb_guillemet": "\u00bb",
+}.items():
+    if (
+        pro_agent_content._validate_copy(
+            "copy/en/description.txt", _swap_markers(descriptions["en"], _marker), values
+        )
+        != "description_structure"
+    ):
+        raise SystemExit(f"marker {_name} is outside the set but was accepted")
+
+# STRUCTURE, NOT JUST MARKERS. A marker says "this line is an item", which is
+# not the claim "this description has a feature list". Stray prose and an
+# unrelated section must not supply a list nobody wrote.
+_lines_en = descriptions["en"].splitlines()
+_without_list = [
+    line for line in _lines_en if pro_agent_content._bullet_payload(line) is None
+]
+
+
+def _with_list(items):
+    out = []
+    for line in _without_list:
+        out.append(line)
+        if heading_en in line:
+            out.extend(items)
+    return "\n".join(out) + "\n"
+
+
+def _appended(items):
+    return "\n".join(_without_list + [""] + items) + "\n"
+
+
+structure_rejections = {
+    "hyphen_prose_outside_the_list": _appended(
+        [
+            "- and it keeps working quietly in the background while you are online",
+            "- because the details matter more than another settings screen does",
+            "- so that the next step in front of you is always the obvious one",
+        ]
+    ),
+    "unrelated_numbered_section": _appended(
+        ["1. Privacy Policy", "2. Terms of Service", "3. Contact Support"]
+    ),
+    "bare_markers": _with_list(["- ", "- ", "- "]),
+    "duplicate_items": _with_list(
+        ["- One good thing", "- One good thing", "- One good thing"]
+    ),
+    "items_below_letter_floor": _with_list(["- 4K", "- HD", "- 5G"]),
+    "too_few_items": _with_list(["- One good thing", "- Another good thing"]),
+}
+for _name, _text in structure_rejections.items():
+    _reason = pro_agent_content._validate_copy(
+        "copy/en/description.txt", _text, values
+    )
+    if _reason != "description_structure":
+        raise SystemExit(
+            f"{_name}: expected description_structure, got {_reason!r}"
+        )
+
+# Positive control for the block above: the same builder with three real items
+# has to validate, or those rejections prove nothing about structure.
+if (
+    pro_agent_content._validate_copy(
+        "copy/en/description.txt",
+        _with_list(
+            ["- One good thing", "- Another good thing", "- A third good thing"]
+        ),
+        values,
+    )
+    is not None
+):
+    raise SystemExit("rebuilt feature list rejected: structure cases prove nothing")
 PY
 
 mkdir -p "$TMP/bin" "$TMP/data/kit"
@@ -131,4 +285,4 @@ if grep -F 'Traceback' "$TMP/notify.stderr" >/dev/null; then
   exit 1
 fi
 
-printf '%s\n' 'content_validation: valid descriptions accepted, malformed locales rejected, fallbacks surfaced'
+printf '%s\n' 'content_validation: valid descriptions accepted, every accepted marker asserted, excluded markers held out, stray prose and unrelated sections rejected as structure, malformed locales rejected, fallbacks surfaced'
