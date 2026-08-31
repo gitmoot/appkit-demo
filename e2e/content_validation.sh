@@ -241,6 +241,29 @@ if (
 # heading, and the prompt requires the heading and bullets but does not demand
 # immediate adjacency. These direct cases reproduce the exact-head review's
 # false positive and two false rejections.
+
+# CLOSING-CTA ORDER. A support email before the standalone heading is a closing
+# CTA before the description's feature section. It cannot be the required
+# closing CTA, and the later list cannot supply valid structure.
+_cta_before_heading = (
+    "\n".join(
+        line for line in _without_list if line.strip() != heading_en
+    )
+    + "\n"
+    + heading_en
+    + "\n"
+    + "\n".join(
+        line for line in _lines_en if pro_agent_content._bullet_payload(line)
+    )
+    + "\n"
+)
+_reason = pro_agent_content._validate_copy(
+    "copy/en/description.txt", _cta_before_heading, values
+)
+if _reason != "description_structure":
+    raise SystemExit(
+        f"cta_before_heading: expected description_structure, got {_reason!r}"
+    )
 _phrase_only_admin = "\n".join(
     (
         f"This sentence mentions {heading_en}, but it is not a heading."
@@ -438,6 +461,21 @@ _check(
 _check(
     "prose interrupts the feature list",
     interleaved_prose,
+    pro_agent_content.FALLBACK_SOURCE,
+    "description_structure",
+)
+
+cta_before_heading = (
+    "\n".join(line for line in without_list if line.strip() != heading)
+    + "\n"
+    + heading
+    + "\n"
+    + "\n".join(line for line in lines if pro_agent_content._bullet_payload(line))
+    + "\n"
+)
+_check(
+    "closing CTA before standalone heading",
+    cta_before_heading,
     pro_agent_content.FALLBACK_SOURCE,
     "description_structure",
 )

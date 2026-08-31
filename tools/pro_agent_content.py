@@ -193,8 +193,9 @@ def _feature_bullets(
     normalized line exactly, then allow the hook's introductory prose before
     the list begins; content-prompt.md requires the heading and bullets but
     does not require immediate adjacency. The required support email marks
-    the closing CTA, so a list found after it cannot supply the feature list.
-    Once the list starts, the first non-item ends it.
+    the closing CTA: it has to follow the standalone heading, and a list found
+    after it cannot supply feature structure. Once the list starts, the first
+    non-item ends it.
 
     Structure still cannot distinguish an administrative list written under a
     real standalone heading from feature bullets. That needs the text's
@@ -203,6 +204,8 @@ def _feature_bullets(
 
     start = None
     for index, line in enumerate(lines):
+        if support_email in line:
+            return []
         if line.strip() == heading:
             start = index + 1
             break
