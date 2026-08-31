@@ -19,6 +19,8 @@ root.mkdir()
 os.chdir(root)
 Path("out").mkdir()
 values = inputs.validate_inputs({"app_name": "Example App"})
+if set(pro_agent_content.DESCRIPTION_HEADINGS) != set(inputs._LOCALE_ORDER):
+    raise SystemExit("description heading locales differ from admitted locales")
 render.render_copy(values)
 descriptions = {
     locale: Path(f"out/copy/{locale}/description.txt").read_text(encoding="utf-8")
@@ -89,6 +91,13 @@ JSON
 run_notify
 grep -F 'content fallbacks: 1' "$MOCK_CURL_ARGS" >/dev/null || {
   printf '%s\n' 'fallback notification omitted its visible count' >&2
+  exit 1
+}
+
+printf '%s\n' '{}' > "$TMP/data/kit/manifest.json"
+run_notify
+grep -F 'content provenance unavailable' "$MOCK_CURL_ARGS" >/dev/null || {
+  printf '%s\n' 'invalid provenance was reported as a clean notification' >&2
   exit 1
 }
 

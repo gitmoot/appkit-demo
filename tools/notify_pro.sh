@@ -102,8 +102,11 @@ fi
 KIT="$DATA_ROOT/kit/launch-kit.zip"
 MANIFEST="$DATA_ROOT/kit/manifest.json"
 CONTENT_FALLBACKS=''
-if [ -f "$MANIFEST" ] && [ ! -L "$MANIFEST" ]; then
-  if CONTENT_FALLBACKS=$(python3 - "$MANIFEST" <<'PY'
+CONTENT_PROVENANCE_STATUS=''
+if [ -f "$KIT" ] && [ ! -L "$KIT" ]; then
+  CONTENT_PROVENANCE_STATUS='unavailable'
+  if [ -f "$MANIFEST" ] && [ ! -L "$MANIFEST" ]; then
+    if CONTENT_FALLBACKS=$(python3 - "$MANIFEST" <<'PY'
 import json
 from pathlib import Path
 import sys
@@ -121,21 +124,29 @@ if not isinstance(provenance, dict) or any(
     raise SystemExit(2)
 print(sum(source == "deterministic-fallback" for source in provenance.values()))
 PY
-  ); then
-    case "$CONTENT_FALLBACKS" in
-      ''|*[!0-9]*)
-        CONTENT_FALLBACKS=''
-        printf '%s\n' 'notify-pro: persisted content provenance is invalid' >&2
-        ;;
-      0) ;;
-      *)
-        CAPTION="${CAPTION} (content fallbacks: ${CONTENT_FALLBACKS})"
-        printf '%s\n' "notify-pro: surfacing ${CONTENT_FALLBACKS} deterministic content fallback(s)" >&2
-        ;;
-    esac
+    ); then
+      case "$CONTENT_FALLBACKS" in
+        ''|*[!0-9]*)
+          CONTENT_FALLBACKS=''
+          printf '%s\n' 'notify-pro: persisted content provenance is invalid' >&2
+          ;;
+        *)
+          CONTENT_PROVENANCE_STATUS='known'
+          if [ "$CONTENT_FALLBACKS" -gt 0 ]; then
+            CAPTION="${CAPTION} (content fallbacks: ${CONTENT_FALLBACKS})"
+            printf '%s\n' "notify-pro: surfacing ${CONTENT_FALLBACKS} deterministic content fallback(s)" >&2
+          fi
+          ;;
+      esac
+    else
+      CONTENT_FALLBACKS=''
+      printf '%s\n' 'notify-pro: persisted content provenance is invalid' >&2
+    fi
   else
-    CONTENT_FALLBACKS=''
-    printf '%s\n' 'notify-pro: persisted content provenance is invalid' >&2
+    printf '%s\n' 'notify-pro: persisted content provenance is unavailable' >&2
+  fi
+  if [ "$CONTENT_PROVENANCE_STATUS" = 'unavailable' ]; then
+    CAPTION="${CAPTION} (content provenance unavailable)"
   fi
 fi
 
