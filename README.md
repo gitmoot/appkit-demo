@@ -16,6 +16,25 @@ generate with `tools/pro_make_pipeline.py`.
 
 Live runs: <https://gitmoot.themartian.app/pipelines/appkit-pro>
 
+### Browser capture setup
+
+From this checkout, install the pinned capture dependency:
+
+```sh
+npm ci --ignore-scripts --no-audit --no-fund
+```
+
+`tools/pro_capture.py` resolves `playwright-core` from this checkout's
+`node_modules`, independently of the working directory. It uses the existing
+`/usr/bin/node` and `/usr/bin/google-chrome`; `playwright-core` does not download
+a browser. Each checkout that runs capture needs its own install.
+
+For the shipped non-isolated shell capture stages, install in Gitmoot's registered
+repository checkout. Capture does not install dependencies automatically. If you
+opt into isolated stage worktrees or run capture from a fresh clone, provision
+the dependency in that execution checkout before capture; an install in another
+checkout is not shared.
+
 ## appkit-demo (the exposable service twin)
 
 Appkit Demo is a deterministic, shell-only Gitmoot pipeline that turns a small typed input object into a ready-to-use app launch kit. It produces device-framed 1290×2796 marketing images, transparent device renders, English and Italian App Store copy, a responsive static landing page, hosted and editable legal documents, app icons, an Open Graph image, a handoff guide, a byte manifest, and a reproducible ZIP.
