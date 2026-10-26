@@ -32,7 +32,7 @@ MIN_EXPORT_BYTES = 10 * 1024
 MAX_EXPORT_PIXELS = 100_000_000
 NODE = Path("/usr/bin/node")
 CHROME = Path("/usr/bin/google-chrome")
-PLAYWRIGHT = Path("/root/vetrina/node_modules/playwright-core")
+PLAYWRIGHT = Path(__file__).resolve().parent.parent / "node_modules" / "playwright-core"
 EXPORT_JUNK_DIRECTORIES = frozenset(
     ("build", "coverage", "deriveddata", "dist", "out", "target")
 )

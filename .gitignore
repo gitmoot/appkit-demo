@@ -2,3 +2,4 @@ out/
 __pycache__/
 appkit-pro.yaml
 appkit-herdrup.yaml
+node_modules/
